@@ -7,7 +7,7 @@
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Sonnet 4.5
 # Date:        23-02-2026
-# Version:     1.1.3
+# Version:     1.1.4
 
 try:
     import indigo
@@ -30,7 +30,7 @@ from datetime import datetime
 # CONSTANTS
 # ==============================================================================
 
-PLUGIN_VERSION         = "1.1.3"
+PLUGIN_VERSION         = "1.1.4"
 
 MQTT_KEEPALIVE         = 60            # seconds for MQTT keepalive ping
 MQTT_RECONNECT_DELAY   = 30            # seconds between reconnect attempts
@@ -159,6 +159,10 @@ class Plugin(indigo.PluginBase):
         self.logger.info("=" * 60)
         # Note: MQTT connection is started in runConcurrentThread after a short delay
 
+        # One-time flag: True once RQ 0004 has been sent to populate zone_name states.
+        # Set False here so zone names are re-requested on every plugin restart.
+        self._zone_names_requested = False
+
     # --------------------------------------------------------------------------
 
     def shutdown(self):
@@ -211,6 +215,14 @@ class Plugin(indigo.PluginBase):
                                 self._apply_mode_update(zone_idx, data)
                     except Exception as exc:
                         self.logger.error(f"Error applying update for Zone {zone_idx}: {exc}")
+
+                # --- One-time zone name request ---
+                # Send RQ 0004 for all zones once we have MQTT + a known controller_id.
+                # Ensures zone_name states are populated immediately after startup rather
+                # than waiting for the controller to broadcast 0004 on its own schedule.
+                if not self._zone_names_requested and self.mqtt_connected and self.gateway_id:
+                    if self._request_zone_names():
+                        self._zone_names_requested = True
 
                 # --- Reconnect if MQTT dropped ---
                 # Guard: allow at least MQTT_RECONNECT_DELAY seconds since the last
@@ -1241,6 +1253,50 @@ class Plugin(indigo.PluginBase):
                 f"Error publishing setpoint for Zone {zone_idx}: {exc}"
             )
             return False
+
+    def _request_zone_names(self):
+        """
+        Send RQ 0004 for each zone to ask the controller to broadcast zone names.
+        The controller responds with RP 0004 per zone, which is processed by
+        _parse_opcode_0004() — populating the zone_name state on each device.
+        Called once after MQTT connects when a controller_id is first available.
+
+        Returns True if at least one RQ was sent; False if no controller_id yet.
+        """
+        # Find a valid controller_id from any zone device
+        controller_id = ""
+        for zone_idx in range(12):
+            dev = self._find_zone_device(zone_idx)
+            if dev:
+                cid = dev.states.get("zone_controller_id", "")
+                if cid.startswith("01:"):
+                    controller_id = cid
+                    break
+
+        if not controller_id:
+            if self.debug:
+                self.logger.debug("RQ 0004: no controller_id available yet - will retry")
+            return False
+
+        success_count = 0
+        for zone_idx in range(12):
+            zone_hex = f"{zone_idx:02X}"
+            gw_addr  = self.gateway_id.replace("-", ":")
+            msg_str  = f"RQ --- {gw_addr} {controller_id} --:------ 0004 001 {zone_hex}"
+            try:
+                with self.mqtt_lock:
+                    if self.mqtt_client and self.mqtt_connected:
+                        topic = self._gateway_tx_topic()
+                        self.mqtt_client.publish(topic, json.dumps({"msg": msg_str}), qos=0)
+                        success_count += 1
+            except Exception as exc:
+                self.logger.warning(f"Error sending RQ 0004 for Zone {zone_idx}: {exc}")
+
+        if success_count:
+            self.logger.info(
+                f"Sent RQ 0004 for {success_count} zones to populate zone_name states"
+            )
+        return success_count > 0
 
     # --------------------------------------------------------------------------
     # Helpers
