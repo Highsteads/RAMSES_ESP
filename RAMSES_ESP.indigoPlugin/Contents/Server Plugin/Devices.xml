@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<Devices>
+	<!-- RAMSES-II Evohome Zone Thermostat — Indigo built-in thermostat type.
+	     Gives native setpoint up/down controls, standard Set Heat Setpoint actions,
+	     and thermostat recognition by HomeKit Link, HA Agent, etc.
+	     Heat-only: cool setpoint, HVAC mode, and fan mode are disabled.
+	     Capabilities are locked in deviceStartComm() via replacePluginPropsOnServer(). -->
+	<Device type="thermostat" id="ramsesZoneThermostat">
+		<Name>RAMSES Zone Thermostat</Name>
+		<ConfigUI>
+			<!-- Capability flags: hidden defaults, locked to heat-only in deviceStartComm() -->
+			<Field type="checkbox" id="SupportsHeatSetpoint"         defaultValue="true"  hidden="true"/>
+			<Field type="checkbox" id="SupportsCoolSetpoint"         defaultValue="false" hidden="true"/>
+			<Field type="checkbox" id="SupportsHvacOperationMode"    defaultValue="false" hidden="true"/>
+			<Field type="checkbox" id="SupportsHvacFanMode"          defaultValue="false" hidden="true"/>
+			<Field type="checkbox" id="ShowCoolHeatEquipmentStateUI" defaultValue="false" hidden="true"/>
+			<Field type="separator" id="sep1"/>
+			<Field id="deviceInfo" type="label" fontSize="small" alignWithControl="true">
+				<Label>This device represents a RAMSES-II Evohome heating zone.
+It is automatically created and managed by the RAMSES ESP plugin
+when a new zone is discovered in the radio message stream.
+The device address is the zone index (0-11).</Label>
+			</Field>
+		</ConfigUI>
+		<States>
+			<!-- Built-in thermostat states provided automatically by Indigo:
+			       temperatureInput1  — current zone temperature
+			       setpointHeat       — heat setpoint
+			       hvacHeaterIsOn     — heater active flag
+			     These are updated directly by the plugin. -->
+
+			<!-- Zone operating mode from RAMSES-II: "schedule" or "permanent override" -->
+			<State id="zone_mode">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Zone Mode changed</TriggerLabel>
+				<ControlPageLabel>Zone Mode</ControlPageLabel>
+			</State>
+
+			<!-- Evohome controller device address e.g. 01:091567 -->
+			<State id="zone_controller_id">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Controller ID changed</TriggerLabel>
+				<ControlPageLabel>Controller ID</ControlPageLabel>
+			</State>
+
+			<!-- Zone name from Evohome controller (opcode 0004) e.g. "Living Room" -->
+			<State id="zone_name">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Zone Name changed</TriggerLabel>
+				<ControlPageLabel>Zone Name</ControlPageLabel>
+			</State>
+
+			<!-- Timestamp of most recent message from this zone -->
+			<State id="last_seen">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Last Seen changed</TriggerLabel>
+				<ControlPageLabel>Last Seen</ControlPageLabel>
+			</State>
+
+			<!-- MQTT connectivity flag: "true" or "false" -->
+			<State id="online">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Online status changed</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+		<!-- Show current temperature (built-in thermostat state) as primary display value -->
+		<UiDisplayStateId>temperatureInput1</UiDisplayStateId>
+	</Device>
+</Devices>

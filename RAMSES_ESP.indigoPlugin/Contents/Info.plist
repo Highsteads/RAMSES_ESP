@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PluginVersion</key>
+	<string>1.1.3</string>
+	<key>ServerApiVersion</key>
+	<string>3.4</string>
+	<key>CFBundleDisplayName</key>
+	<string>RAMSES ESP</string>
+	<key>CFBundleIdentifier</key>
+	<string>uk.co.clives.ramses.esp</string>
+	<key>CFBundleVersion</key>
+	<string>1.1.3</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>RAMSES ESP Plugin</string>
+		</dict>
+	</array>
+</dict>
+</plist>

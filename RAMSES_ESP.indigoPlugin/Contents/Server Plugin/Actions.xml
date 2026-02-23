@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<Actions>
+
+	<!-- Request immediate zone update from controller.
+	     The setZoneSetpoint custom action has been replaced by Indigo's built-in
+	     thermostat Set Heat Setpoint action (via actionControlThermostat callback). -->
+	<Action id="requestZoneUpdate" uiPath="PluginActions">
+		<Name>Request Zone Update</Name>
+		<CallbackMethod>action_request_zone_update</CallbackMethod>
+		<ConfigUI>
+			<Field id="actionInfo" type="label" fontSize="small" alignWithControl="true">
+				<Label>Sends an RQ 30C9 message to request current zone temperatures
+from the Evohome controller. Requires gateway ID to be discovered first.</Label>
+			</Field>
+		</ConfigUI>
+	</Action>
+
+</Actions>

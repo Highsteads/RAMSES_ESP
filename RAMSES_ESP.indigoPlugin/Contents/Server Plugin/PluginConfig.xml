@@ -1,0 +1,65 @@
+<?xml version="1.0"?>
+<PluginConfig>
+
+	<Field id="titleLabel" type="label" fontSize="large">
+		<Label>RAMSES ESP Plugin Configuration</Label>
+	</Field>
+
+	<Field id="sep1" type="separator"/>
+
+	<Field id="mqttHeader" type="label" fontSize="regular">
+		<Label>MQTT Broker Settings</Label>
+	</Field>
+
+	<Field id="mqtt_broker_host" type="textfield" defaultValue="192.168.100.140">
+		<Label>Broker Host:</Label>
+	</Field>
+
+	<Field id="mqtt_broker_port" type="textfield" defaultValue="1883">
+		<Label>Broker Port:</Label>
+	</Field>
+
+	<Field id="mqtt_username" type="textfield" defaultValue="">
+		<Label>Username (optional):</Label>
+	</Field>
+
+	<Field id="mqtt_password" type="textfield" defaultValue="">
+		<Label>Password (optional):</Label>
+		<Description>Leave blank if broker requires no authentication</Description>
+	</Field>
+
+	<Field id="sep2" type="separator"/>
+
+	<Field id="gatewayHeader" type="label" fontSize="regular">
+		<Label>Gateway Discovery</Label>
+	</Field>
+
+	<Field id="gatewayInfo" type="label" fontSize="small" alignWithControl="true">
+		<Label>The gateway ID is discovered automatically by listening on
+RAMSES/GATEWAY/+/info. Once discovered it is saved below.
+Clear this field and save to force re-discovery on next restart.</Label>
+	</Field>
+
+	<Field id="discovered_gateway_id" type="textfield" defaultValue="">
+		<Label>Discovered Gateway ID:</Label>
+		<Description>Auto-populated after first gateway contact. Format: 18:XXXXXX</Description>
+	</Field>
+
+	<Field id="sep3" type="separator"/>
+
+	<Field id="debugHeader" type="label" fontSize="regular">
+		<Label>Logging</Label>
+	</Field>
+
+	<Field id="debug_logging" type="checkbox" defaultValue="false">
+		<Label>Enable Debug Logging:</Label>
+		<Description>Logs all received RAMSES-II messages (verbose - use for troubleshooting only)</Description>
+	</Field>
+
+	<Field id="sep4" type="separator"/>
+
+	<Field id="versionLabel" type="label" fontSize="small" alignWithControl="true">
+		<Label>Version 1.0.0  |  Author: CliveS and Claude Sonnet 4.5</Label>
+	</Field>
+
+</PluginConfig>
