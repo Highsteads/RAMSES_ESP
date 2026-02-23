@@ -11,7 +11,7 @@
 		<Label>MQTT Broker Settings</Label>
 	</Field>
 
-	<Field id="mqtt_broker_host" type="textfield" defaultValue="192.168.100.140">
+	<Field id="mqtt_broker_host" type="textfield" defaultValue="192.168.1.x">
 		<Label>Broker Host:</Label>
 	</Field>
 

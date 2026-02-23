@@ -116,7 +116,7 @@ class Plugin(indigo.PluginBase):
         self.zone_lock          = threading.Lock()   # protects zone_devices
 
         # MQTT connection settings (loaded from pluginPrefs in startup / closedPrefsConfigUi)
-        self.broker_host        = "192.168.100.140"
+        self.broker_host        = "192.168.1.x"
         self.broker_port        = 1883
         self.broker_username    = ""
         self.broker_password    = ""
@@ -1287,7 +1287,7 @@ class Plugin(indigo.PluginBase):
     def _read_prefs(self):
         """Load MQTT settings and gateway ID from plugin preferences."""
         prefs = self.pluginPrefs
-        self.broker_host     = prefs.get("mqtt_broker_host",     "192.168.100.140").strip()
+        self.broker_host     = prefs.get("mqtt_broker_host",     "192.168.1.x").strip()
         self.broker_port     = int(prefs.get("mqtt_broker_port", 1883))
         self.broker_username = prefs.get("mqtt_username",        "").strip()
         self.broker_password = prefs.get("mqtt_password",        "").strip()
