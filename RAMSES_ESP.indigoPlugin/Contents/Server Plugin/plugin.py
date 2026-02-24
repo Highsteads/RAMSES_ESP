@@ -7,7 +7,7 @@
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Sonnet 4.5
 # Date:        23-02-2026
-# Version:     1.1.4
+# Version:     1.1.5
 
 try:
     import indigo
@@ -30,7 +30,7 @@ from datetime import datetime
 # CONSTANTS
 # ==============================================================================
 
-PLUGIN_VERSION         = "1.1.4"
+PLUGIN_VERSION         = "1.1.5"
 
 MQTT_KEEPALIVE         = 60            # seconds for MQTT keepalive ping
 MQTT_RECONNECT_DELAY   = 30            # seconds between reconnect attempts
@@ -150,6 +150,23 @@ class Plugin(indigo.PluginBase):
                     self.zone_devices[zone_idx] = dev.id
                 self.logger.info(f"  Restored Zone {zone_idx}: '{dev.name}' (dev ID {dev.id})")
                 restored += 1
+
+                # Seed zone_name from device name if still empty.
+                # The Evohome controller (01:) ignores RQ 0004 from an 18: gateway,
+                # so opcode 0004 only arrives when the controller broadcasts it naturally
+                # (on startup / name change). Until then, derive zone_name from the
+                # Indigo device name by stripping a trailing " Radiator" suffix.
+                # A real 0004 message will overwrite this when it eventually arrives.
+                if not dev.states.get("zone_name", ""):
+                    derived = dev.name
+                    if derived.endswith(" Radiator"):
+                        derived = derived[:-len(" Radiator")]
+                    try:
+                        dev.updateStatesOnServer([{"key": "zone_name", "value": derived}])
+                        self.logger.info(f"    zone_name seeded from device name: '{derived}'")
+                    except Exception as exc:
+                        self.logger.warning(f"    Could not seed zone_name for '{dev.name}': {exc}")
+
             except (ValueError, Exception) as exc:
                 self.logger.warning(f"  Could not restore zone device '{dev.name}': {exc}")
 
