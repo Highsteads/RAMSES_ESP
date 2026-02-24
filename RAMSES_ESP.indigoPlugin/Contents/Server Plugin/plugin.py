@@ -7,7 +7,7 @@
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Sonnet 4.5
 # Date:        23-02-2026
-# Version:     1.1.7
+# Version:     1.1.8
 
 try:
     import indigo
@@ -30,7 +30,7 @@ from datetime import datetime
 # CONSTANTS
 # ==============================================================================
 
-PLUGIN_VERSION         = "1.1.7"
+PLUGIN_VERSION         = "1.1.8"
 
 MQTT_KEEPALIVE         = 60            # seconds for MQTT keepalive ping
 MQTT_RECONNECT_DELAY   = 30            # seconds between reconnect attempts
@@ -488,7 +488,9 @@ class Plugin(indigo.PluginBase):
                 f"Could not update setpointHeat state for '{dev.name}': {exc}"
             )
 
-        self.logger.info(
+        # Debug only: the EvoHome script already logs the room action at INFO level.
+        # Suppress at INFO to keep the Indigo event log clean during normal operation.
+        self.logger.debug(
             f"'{dev.name}' (Zone {zone_idx}) setpoint {action_str} -> {setpoint_c:.1f} degC"
         )
 
@@ -1305,7 +1307,9 @@ class Plugin(indigo.PluginBase):
                     return False
                 self.mqtt_client.publish(topic, tx_payload, qos=0)
 
-            self.logger.info(
+            # Debug only: full MQTT detail is noisy in normal operation — the calling
+            # script already logs the room/temp/action at INFO level.
+            self.logger.debug(
                 f"Setpoint {setpoint_c:.2f}degC sent to Zone {zone_idx} "
                 f"via {topic} | msg: {msg_str}"
             )
