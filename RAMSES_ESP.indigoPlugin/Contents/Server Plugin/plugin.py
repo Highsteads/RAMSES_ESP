@@ -7,7 +7,7 @@
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Sonnet 4.5
 # Date:        23-02-2026
-# Version:     1.1.5
+# Version:     1.1.6
 
 try:
     import indigo
@@ -30,7 +30,7 @@ from datetime import datetime
 # CONSTANTS
 # ==============================================================================
 
-PLUGIN_VERSION         = "1.1.5"
+PLUGIN_VERSION         = "1.1.6"
 
 MQTT_KEEPALIVE         = 60            # seconds for MQTT keepalive ping
 MQTT_RECONNECT_DELAY   = 30            # seconds between reconnect attempts
@@ -351,6 +351,13 @@ class Plugin(indigo.PluginBase):
                     changed = True
             if changed:
                 dev.replacePluginPropsOnServer(props)
+
+            # Ensure hvacOperationMode is always Heat.
+            # Indigo defaults this to Off (0) which makes HomeKit and other integrations
+            # show the device as "OFF". Evohome zones are heat-only — always in Heat mode.
+            dev.updateStatesOnServer([
+                {"key": "hvacOperationMode", "value": indigo.kHvacMode.Heat},
+            ])
         except Exception as exc:
             self.logger.warning(f"deviceStartComm: could not set thermostat props for '{dev.name}': {exc}")
 
@@ -1054,10 +1061,21 @@ class Plugin(indigo.PluginBase):
         controller_id = data.get("controller_id", "")
         ts            = self._format_ts(data.get("ts", ""))
 
+        # hvacHeaterIsOn: True when zone temp is meaningfully below setpoint.
+        # Used by HomeKit and other integrations to show the heating-active indicator.
+        # 0.3 degC hysteresis prevents rapid toggling around the setpoint.
+        try:
+            setpoint   = float(dev.states.get("setpointHeat", 0.0))
+            is_heating = temp_c < (setpoint - 0.3) if setpoint > SETPOINT_MIN_C else False
+        except Exception:
+            is_heating = False
+
         try:
             state_updates = [
                 {"key": "temperatureInput1", "value": round(temp_c, 2),
                  "uiValue": f"{temp_c:.2f} degC"},
+                {"key": "hvacOperationMode", "value": indigo.kHvacMode.Heat},
+                {"key": "hvacHeaterIsOn",    "value": is_heating},
                 {"key": "last_seen",         "value": ts},
                 {"key": "online",            "value": "true"},
             ]
