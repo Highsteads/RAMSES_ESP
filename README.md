@@ -118,6 +118,10 @@ reset
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.1.7 | 24-Feb-2026 | Fix HomeKit showing OFF: enable SupportsHvacOperationMode + ShowCoolHeatEquipmentStateUI; re-fetch device after replacePluginPropsOnServer(); add SetHvacMode handler to lock zones to Heat |
+| 1.1.6 | 24-Feb-2026 | Add hvacHeaterIsOn (flame indicator) and hvacOperationMode updates on temp refresh for HomeKit |
+| 1.1.5 | 24-Feb-2026 | Seed zone_name from device name on startup for zones where 0004 has not yet been received |
+| 1.1.4 | 24-Feb-2026 | Send RQ 0004 on startup to populate zone_name states |
 | 1.1.3 | 23-Feb-2026 | Fix Zone 0 controller ID being wiped by direct TRV messages; fix misleading success log after publish failure |
 | 1.1.2 | 23-Feb-2026 | Downgrade pre-NTP gateway timestamp log from WARNING to INFO; remove unhelpful "Check SNTP config" advice (firmware limitation) |
 | 1.1.1 | 23-Feb-2026 | Fix hvacHeaterIsOn state error on new zone device creation |

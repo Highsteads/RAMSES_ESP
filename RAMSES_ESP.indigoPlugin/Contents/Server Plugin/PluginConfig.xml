@@ -59,7 +59,7 @@ Clear this field and save to force re-discovery on next restart.</Label>
 	<Field id="sep4" type="separator"/>
 
 	<Field id="versionLabel" type="label" fontSize="small" alignWithControl="true">
-		<Label>Version 1.0.0  |  Author: CliveS and Claude Sonnet 4.5</Label>
+		<Label>Version 1.1.7  |  Author: CliveS and Claude Sonnet 4.5</Label>
 	</Field>
 
 </PluginConfig>

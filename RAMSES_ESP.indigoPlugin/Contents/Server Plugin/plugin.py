@@ -7,7 +7,7 @@
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Sonnet 4.5
 # Date:        23-02-2026
-# Version:     1.1.6
+# Version:     1.1.7
 
 try:
     import indigo
@@ -30,7 +30,7 @@ from datetime import datetime
 # CONSTANTS
 # ==============================================================================
 
-PLUGIN_VERSION         = "1.1.6"
+PLUGIN_VERSION         = "1.1.7"
 
 MQTT_KEEPALIVE         = 60            # seconds for MQTT keepalive ping
 MQTT_RECONNECT_DELAY   = 30            # seconds between reconnect attempts
@@ -341,9 +341,14 @@ class Plugin(indigo.PluginBase):
                 "NumHumidityInputs":            "0",
                 "SupportsHeatSetpoint":         True,
                 "SupportsCoolSetpoint":         False,
-                "SupportsHvacOperationMode":    False,
+                # SupportsHvacOperationMode must be True for the hvacOperationMode state to
+                # exist. With False, the state is never created and updateStatesOnServer() fails.
+                # We keep mode locked to Heat in actionControlThermostat() SetHvacMode handler.
+                "SupportsHvacOperationMode":    True,
                 "SupportsHvacFanMode":          False,
-                "ShowCoolHeatEquipmentStateUI": False,
+                # ShowCoolHeatEquipmentStateUI must be True for hvacHeaterIsOn to exist.
+                # This is the "flame on" indicator used by HomeKit to show active heating.
+                "ShowCoolHeatEquipmentStateUI": True,
             }
             for key, val in capability_defaults.items():
                 if props.get(key) != val:
@@ -351,6 +356,10 @@ class Plugin(indigo.PluginBase):
                     changed = True
             if changed:
                 dev.replacePluginPropsOnServer(props)
+                # Re-fetch: replacePluginPropsOnServer() creates new built-in thermostat
+                # states (hvacOperationMode, hvacHeaterIsOn) but the local dev object is
+                # stale until refreshed. Without this, updateStatesOnServer() below fails.
+                dev = indigo.devices[dev.id]
 
             # Ensure hvacOperationMode is always Heat.
             # Indigo defaults this to Off (0) which makes HomeKit and other integrations
@@ -403,6 +412,25 @@ class Plugin(indigo.PluginBase):
                 new_sp = dev.heatSetpoint - float(action.actionValue)
                 self._validate_and_publish_setpoint(dev, new_sp, "decrease")
 
+            elif action.thermostatAction == indigo.kThermostatAction.SetHvacMode:
+                # Evohome zones are heat-only — ignore Off/Cool requests and lock to Heat.
+                # HomeKit (and other integrations) may send SetHvacMode(Off) when the user
+                # taps the thermostat off. We silently re-assert Heat so the zone stays on.
+                requested = action.actionValue
+                if requested != indigo.kHvacMode.Heat:
+                    self.logger.info(
+                        f"'{dev.name}' SetHvacMode({requested}) ignored "
+                        f"- Evohome zones are heat-only; mode stays Heat"
+                    )
+                try:
+                    dev.updateStatesOnServer([
+                        {"key": "hvacOperationMode", "value": indigo.kHvacMode.Heat},
+                    ])
+                except Exception as exc:
+                    self.logger.warning(
+                        f"Could not re-assert Heat mode for '{dev.name}': {exc}"
+                    )
+
             elif action.thermostatAction in (
                 indigo.kThermostatAction.RequestStatusAll,
                 indigo.kThermostatAction.RequestSetpoints,
@@ -414,7 +442,7 @@ class Plugin(indigo.PluginBase):
                 self.action_request_zone_update(action)
 
             else:
-                # Cool setpoint / HVAC mode / fan mode not applicable to Evohome heat zones
+                # Cool setpoint / fan mode not applicable to Evohome heat zones
                 if self.debug:
                     self.logger.debug(
                         f"'{dev.name}' thermostat action {action.thermostatAction} "
