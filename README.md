@@ -31,15 +31,22 @@ The RAMSES-ESP is an ESP32-S3 + CC1101 RF USB dongle that bridges the Honeywell 
 | MQTT broker | Any (e.g. Mosquitto on Home Assistant) |
 | Heating system | Honeywell Evohome with RAMSES-II TRVs |
 
+## Credentials
+
+This plugin requires no entries in `secrets.py`. MQTT broker credentials are entered
+in the plugin configuration dialog (Plugins → RAMSES ESP → Configure) and are stored
+in Indigo's own plugin preferences.
+
+A `secrets_example.py` file is included as standard on all CliveS plugins. It is not
+used by this plugin.
+
 ## Installation
 
-1. Download the latest release `.zip` or clone this repo
-2. Copy `RAMSES_ESP.indigoPlugin` to:
-   ```
-   /Library/Application Support/Perceptive Automation/Indigo 2025.1/Plugins/
-   ```
-3. In Indigo: **Plugins → Manage Plugins** — enable **RAMSES ESP**
-4. Open **Plugin Config** and enter your MQTT broker details
+1. Go to the [Releases page](https://github.com/Highsteads/RAMSES_ESP/releases) and download `RAMSES_ESP.indigoPlugin.zip`
+2. Unzip — you will get `RAMSES_ESP.indigoPlugin`
+3. Double-click `RAMSES_ESP.indigoPlugin` — Indigo will install it automatically
+4. In Indigo: **Plugins → Manage Plugins** — enable **RAMSES ESP**
+5. Open **Plugin Config** and enter your MQTT broker details
 
 ## Configuration
 
