@@ -26,11 +26,20 @@ import threading
 import time
 from datetime import datetime
 
+import sys as _sys
+_sys.path.insert(0, "/Library/Application Support/Perceptive Automation")
+try:
+    from secrets import MQTT_BROKER, MQTT_USERNAME, MQTT_PASSWORD
+except ImportError:
+    MQTT_BROKER   = "192.168.100.160"
+    MQTT_USERNAME = ""
+    MQTT_PASSWORD = ""
+
 # ==============================================================================
 # CONSTANTS
 # ==============================================================================
 
-PLUGIN_VERSION         = "1.1.8"
+PLUGIN_VERSION         = "1.2.4"
 
 MQTT_KEEPALIVE         = 60            # seconds for MQTT keepalive ping
 MQTT_RECONNECT_DELAY   = 30            # seconds between reconnect attempts
@@ -116,10 +125,10 @@ class Plugin(indigo.PluginBase):
         self.zone_lock          = threading.Lock()   # protects zone_devices
 
         # MQTT connection settings (loaded from pluginPrefs in startup / closedPrefsConfigUi)
-        self.broker_host        = "192.168.1.x"
+        self.broker_host        = MQTT_BROKER
         self.broker_port        = 1883
-        self.broker_username    = ""
-        self.broker_password    = ""
+        self.broker_username    = MQTT_USERNAME
+        self.broker_password    = MQTT_PASSWORD
 
         # Timestamp of last _mqtt_connect() call; prevents the main-loop health check
         # from triggering a reconnect before paho's async on_connect has had time to fire.
@@ -454,9 +463,9 @@ class Plugin(indigo.PluginBase):
 
     def _validate_and_publish_setpoint(self, dev, setpoint_c, action_str):
         """
-        Clamp setpoint to valid range, publish W 2309 to RAMSES gateway,
-        and optimistically update setpointHeat state immediately so the UI
-        reflects the command before the next 2309 broadcast confirms it.
+        Clamp setpoint to valid range, publish W 2349 permanent override to RAMSES
+        gateway, and optimistically update setpointHeat state immediately so the UI
+        reflects the command before the next 2349/2309 broadcast confirms it.
         """
         if not self.mqtt_connected:
             self.logger.error(
@@ -862,9 +871,28 @@ class Plugin(indigo.PluginBase):
         30C9 - Zone temperatures.
         Payload: repeating 3-byte blocks - [zone_idx(1 byte)][temp_degC(2 bytes)]
         A single message may contain multiple zones.
+
+        Temperature source priority:
+        - Controller-sourced 30C9 (controller_id non-empty, i.e. contains '01:xxxxxx'):
+          The Evohome controller broadcasts I 30C9 036 every ~60 s covering all 12 zones.
+          It reports the DESIGNATED zone-thermostat TRV's reading for each zone —
+          one authoritative temperature per zone.  Always accepted.
+        - TRV-sourced 30C9 (controller_id empty, packet from individual 04:xxxxxx device):
+          Each TRV in a zone broadcasts its own local temperature independently.
+          In multi-TRV zones these readings can differ significantly (e.g. one TRV in direct
+          sunlight vs. one on a cold wall).  Accepting them causes temperatureInput1 to
+          oscillate between TRVs, triggering spurious overheat detections every minute.
+          IGNORED — only the controller's aggregated view is used.
         """
         controller_id = self._extract_controller_id(fields)
         block_count   = len(payload_hex) // 6   # 3 bytes = 6 hex chars per block
+
+        # Reject individual TRV 30C9 packets (no 01: controller address).
+        # The controller's own periodic all-zone 30C9 is the authoritative source.
+        if not controller_id:
+            if self.debug:
+                self.logger.debug(f"30C9: TRV-sourced packet ignored (no controller address)")
+            return
 
         for i in range(block_count):
             block_start = i * 6
@@ -1123,8 +1151,10 @@ class Plugin(indigo.PluginBase):
     def _apply_setpoint_update(self, zone_idx, data):
         """Update setpointHeat (built-in thermostat state). Creates device if not yet known.
 
-        Only called when a 2309 (setpoint) message arrives WITHOUT a concurrent 2349
-        (zone mode) message — meaning the zone is on schedule. Infers zone_mode = 'schedule'.
+        Called when a 2309 (setpoint-only) message arrives. Does NOT update zone_mode —
+        a 2309 packet carries no mode information. The controller broadcasts I 2309 for all
+        zones every ~60 s regardless of mode; inferring 'schedule' from it would overwrite
+        a valid 'permanent override' state. zone_mode is updated ONLY from 2349 broadcasts.
         If a 2349 arrives in the same poll cycle, _apply_mode_update() runs instead.
         """
         dev = self._find_zone_device(zone_idx)
@@ -1141,7 +1171,6 @@ class Plugin(indigo.PluginBase):
             state_updates = [
                 {"key": "setpointHeat", "value": round(setpoint_c, 2),
                  "uiValue": f"{setpoint_c:.2f} degC"},
-                {"key": "zone_mode",    "value": "schedule"},
                 {"key": "last_seen",    "value": ts},
                 {"key": "online",       "value": "true"},
             ]
@@ -1149,7 +1178,7 @@ class Plugin(indigo.PluginBase):
                 state_updates.append({"key": "zone_controller_id", "value": controller_id})
             dev.updateStatesOnServer(state_updates)
             if self.debug:
-                self.logger.debug(f"Zone {zone_idx} setpoint -> {setpoint_c:.2f}degC (schedule)")
+                self.logger.debug(f"Zone {zone_idx} setpoint -> {setpoint_c:.2f}degC")
         except Exception as exc:
             self.logger.error(f"Error updating Zone {zone_idx} setpoint state: {exc}")
 
@@ -1256,17 +1285,23 @@ class Plugin(indigo.PluginBase):
 
     def _publish_setpoint(self, zone_idx, setpoint_c):
         """
-        Publish a W 2309 setpoint command to the gateway tx topic.
+        Publish a W 2349 permanent-override command to the gateway tx topic.
 
-        RAMSES-II W command format:
-          W --- <gw_addr> <controller_id> --:------ 2309 003 ZZXXYY
+        RAMSES-II W 2349 permanent override format (7 bytes):
+          W --- <gw_addr> <controller_id> --:------ 2349 007 ZZXXYYMMFFFFFF
         where:
-          ZZ   = zone_idx as 2 hex chars
-          XXYY = setpoint * 100 as big-endian 16-bit hex (4 chars)
+          ZZ     = zone_idx as 2 hex chars
+          XXYY   = setpoint * 100 as big-endian 16-bit hex (4 chars)
+          MM     = mode byte: 0x02 = ZONE_MODE_PERMANENT
+          FFFFFF = end datetime all-FF (indefinite, no expiry)
 
         Example: Zone 1, 21.5 degC -> setpoint * 100 = 2150 = 0x0866
-          payload_hex = "010866"
-          msg = "W --- 18:730 01:123456 --:------ 2309 003 010866"
+          payload_hex = "010866 02FFFFFF"
+          msg = "W --- 18:730 01:123456 --:------ 2349 007 01086602FFFFFF"
+
+        Previously sent W 2309 (temporary override, 3 bytes) which allowed the
+        Evohome schedule and EU cloud server to cancel setpoints at period
+        boundaries. W 2349 permanent override prevents this (v1.2.0).
         """
         try:
             # Look up controller ID from the zone's device state
@@ -1290,12 +1325,13 @@ class Plugin(indigo.PluginBase):
             raw_setpoint = int(round(setpoint_c * TEMP_SCALE))
             raw_setpoint = max(0, min(raw_setpoint, TEMP_UNKNOWN_RAW - 1))
 
-            payload_hex = f"{zone_idx:02X}{raw_setpoint:04X}"
+            # W 2349 permanent override: zone + setpoint + mode(0x02) + FFFFFF (no expiry)
+            payload_hex = f"{zone_idx:02X}{raw_setpoint:04X}{ZONE_MODE_PERMANENT:02X}FFFFFF"
 
             # Normalise gateway address format (wiki shows 18:730, but device may use 18-730)
             gw_addr = self.gateway_id.replace("-", ":")
 
-            msg_str   = f"W --- {gw_addr} {controller_id} --:------ 2309 003 {payload_hex}"
+            msg_str   = f"W --- {gw_addr} {controller_id} --:------ 2349 007 {payload_hex}"
             tx_payload = json.dumps({"msg": msg_str})
             topic     = self._gateway_tx_topic()
 
@@ -1307,11 +1343,8 @@ class Plugin(indigo.PluginBase):
                     return False
                 self.mqtt_client.publish(topic, tx_payload, qos=0)
 
-            # Debug only: full MQTT detail is noisy in normal operation — the calling
-            # script already logs the room/temp/action at INFO level.
             self.logger.debug(
-                f"Setpoint {setpoint_c:.2f}degC sent to Zone {zone_idx} "
-                f"via {topic} | msg: {msg_str}"
+                f"Zone {zone_idx}: W 2349 {setpoint_c:.1f}degC permanent override sent"
             )
             return True
 
@@ -1410,10 +1443,10 @@ class Plugin(indigo.PluginBase):
     def _read_prefs(self):
         """Load MQTT settings and gateway ID from plugin preferences."""
         prefs = self.pluginPrefs
-        self.broker_host     = prefs.get("mqtt_broker_host",     "192.168.1.x").strip()
+        self.broker_host     = prefs.get("mqtt_broker_host",     MQTT_BROKER).strip()    or MQTT_BROKER
         self.broker_port     = int(prefs.get("mqtt_broker_port", 1883))
-        self.broker_username = prefs.get("mqtt_username",        "").strip()
-        self.broker_password = prefs.get("mqtt_password",        "").strip()
+        self.broker_username = prefs.get("mqtt_username",        MQTT_USERNAME).strip() or MQTT_USERNAME
+        self.broker_password = prefs.get("mqtt_password",        MQTT_PASSWORD).strip() or MQTT_PASSWORD
         self.debug           = bool(prefs.get("debug_logging",   False))
 
         # Extract gateway ID: use regex to find the first valid RAMSES device address
