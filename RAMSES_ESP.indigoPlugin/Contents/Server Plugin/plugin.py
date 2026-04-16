@@ -5,9 +5,17 @@
 #              Connects to RAMSES-ESP wireless HVAC gateway via MQTT, auto-discovers
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
-# Author:      CliveS & Claude Sonnet 4.5
-# Date:        23-02-2026
-# Version:     1.1.8
+# Author:      CliveS & Claude Sonnet 4.6
+# Date:        08-04-2026
+# Version:     1.2.5
+#
+# v1.2.5 Changes (08-04-2026):
+# - Gateway offline/restored Pushover notifications
+#   * _handle_info_message now checks "online"/"offline" payload for known gateway
+#   * Queues "offline" or "restored" alert via pending_gateway_alert (thread-safe)
+#   * runConcurrentThread drains alert and calls _send_gateway_alert on main thread
+#   * Alert sent once per offline event; reset when gateway restores
+#   * Every plugin reload when gateway is offline will re-alert (confirms fault still present)
 
 try:
     import indigo
@@ -39,7 +47,7 @@ except ImportError:
 # CONSTANTS
 # ==============================================================================
 
-PLUGIN_VERSION         = "1.2.4"
+PLUGIN_VERSION         = "1.2.5"
 
 MQTT_KEEPALIVE         = 60            # seconds for MQTT keepalive ping
 MQTT_RECONNECT_DELAY   = 30            # seconds between reconnect attempts
@@ -119,6 +127,11 @@ class Plugin(indigo.PluginBase):
         # Writing pluginPrefs from the MQTT callback thread triggers closedPrefsConfigUi
         # which disconnects MQTT - so we defer the prefs write to the main thread.
         self.pending_gateway_id = ""                 # guarded by pending_lock
+
+        # Gateway online/offline monitoring
+        self.gateway_online        = None   # None=unknown, True=online, False=offline
+        self.gateway_alert_sent    = False  # True after offline Pushover sent; reset on restore
+        self.pending_gateway_alert = None   # "offline" or "restored" — drained by runConcurrentThread
 
         # Known zone -> Indigo device ID mapping (rebuilt from existing devs at startup)
         self.zone_devices       = {}                 # {zone_idx(int): indigo_dev_id(int)}
@@ -211,12 +224,18 @@ class Plugin(indigo.PluginBase):
                     self.pending_updates.clear()
                     zone_names = dict(self.pending_zone_names)
                     self.pending_zone_names.clear()
-                    new_gw_id  = self.pending_gateway_id
+                    new_gw_id     = self.pending_gateway_id
                     self.pending_gateway_id = ""
+                    gateway_alert = self.pending_gateway_alert
+                    self.pending_gateway_alert = None
 
                 # Persist new gateway ID to prefs (must be done on main thread)
                 if new_gw_id:
                     self._persist_gateway_id(new_gw_id)
+
+                # Send gateway online/offline Pushover alert if queued
+                if gateway_alert:
+                    self._send_gateway_alert(gateway_alert)
 
                 # Apply zone name updates (store state + auto-rename device)
                 for zone_idx, name in zone_names.items():
@@ -708,7 +727,20 @@ class Plugin(indigo.PluginBase):
                 return
 
             if self.gateway_id == discovered_id:
-                return   # already known
+                payload_lower = payload.strip().lower()
+                with self.pending_lock:
+                    if payload_lower == "offline":
+                        self.gateway_online = False
+                        if not self.gateway_alert_sent:
+                            self.pending_gateway_alert = "offline"
+                            self.gateway_alert_sent    = True
+                    elif payload_lower == "online":
+                        prev_online = self.gateway_online
+                        self.gateway_online = True
+                        if prev_online is False:   # was offline — notify restored
+                            self.pending_gateway_alert = "restored"
+                            self.gateway_alert_sent    = False
+                return
 
             if self.gateway_id:
                 self.logger.warning(
@@ -718,6 +750,7 @@ class Plugin(indigo.PluginBase):
                 return
 
             self.logger.info(f"Gateway discovered: {discovered_id}")
+            self.gateway_online = True
             self._set_gateway_id(discovered_id)
 
         except Exception as exc:
@@ -1226,6 +1259,32 @@ class Plugin(indigo.PluginBase):
             ])
         except Exception as exc:
             self.logger.error(f"Error setting Zone {zone_idx} offline: {exc}")
+
+    def _send_gateway_alert(self, status):
+        """Send Pushover notification for gateway offline/restored. Called from main thread only."""
+        if status == "offline":
+            title    = "RAMSES Gateway Offline"
+            message  = (f"RAMSES ESP gateway {self.gateway_id or 'unknown'} has gone offline"
+                        f" — Evohome radiator control suspended")
+            priority = "1"   # high
+        else:
+            title    = "RAMSES Gateway Restored"
+            message  = f"RAMSES ESP gateway {self.gateway_id or 'unknown'} is back online"
+            priority = "0"   # normal
+        try:
+            pushover = indigo.server.getPlugin("io.thechad.indigoplugin.pushover")
+            if pushover and pushover.isEnabled():
+                pushover.executeAction("send", props={
+                    "msgTitle":    title,
+                    "msgBody":     message,
+                    "msgPriority": priority,
+                    "msgSound":    "vibrate",   # vibrate only, no sound
+                })
+                self.logger.info(f"[Gateway] Pushover sent: {title}")
+            else:
+                self.logger.warning(f"[Gateway] Pushover not enabled — alert not sent: {title}")
+        except Exception as exc:
+            self.logger.error(f"[Gateway] Pushover send failed: {exc}")
 
     def _apply_zone_name_update(self, zone_idx, name):
         """
