@@ -21,4 +21,6 @@ CLAUDE.md
 
 # Secrets — never commit; only secrets_example.py is published
 secrets.py
+IndigoSecrets.py
 **/secrets.py
+**/IndigoSecrets.py

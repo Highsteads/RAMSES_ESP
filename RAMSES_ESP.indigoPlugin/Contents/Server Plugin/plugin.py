@@ -57,16 +57,18 @@ _sys.path.insert(0, _os.getcwd())   # bundled plugin_utils.py
 _sys.path.insert(0, "/Library/Application Support/Perceptive Automation")  # shared secrets.py
 
 # Per-key secrets imports — a missing single key must not blank the others.
+# Master file: IndigoSecrets.py (renamed from secrets.py on 10-May-2026 to
+# avoid shadowing Python's stdlib `secrets` module).
 try:
-    from secrets import MQTT_BROKER
+    from IndigoSecrets import MQTT_BROKER
 except ImportError:
     MQTT_BROKER = ""
 try:
-    from secrets import MQTT_USERNAME
+    from IndigoSecrets import MQTT_USERNAME
 except ImportError:
     MQTT_USERNAME = ""
 try:
-    from secrets import MQTT_PASSWORD
+    from IndigoSecrets import MQTT_PASSWORD
 except ImportError:
     MQTT_PASSWORD = ""
 

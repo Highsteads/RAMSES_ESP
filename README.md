@@ -31,16 +31,16 @@ The RAMSES-ESP is an ESP32-S3 + CC1101 RF USB dongle that bridges the Honeywell 
 | MQTT broker | Any (e.g. Mosquitto running locally) |
 | Heating system | Honeywell Evohome with RAMSES-II TRVs |
 
-## Credentials — `secrets.py` vs `secrets_example.py`
+## Credentials — `IndigoSecrets.py` vs `IndigoSecrets_example.py`
 
 There are two files. Only one of them holds your real values:
 
 | File | Purpose | Real data? | Committed to GitHub? |
 |------|---------|------------|----------------------|
-| `secrets.py` | The **working file** the plugin reads at runtime. Lives at `/Library/Application Support/Perceptive Automation/secrets.py`. Keep a backup in a password manager. | YES | **NO** — listed in `.gitignore`. |
-| `secrets_example.py` | **Template only** — empty placeholders. Shipped in the plugin bundle and on GitHub. | NO | YES. |
+| `IndigoSecrets.py` | The **working file** the plugin reads at runtime. Lives at `/Library/Application Support/Perceptive Automation/IndigoSecrets.py`. Keep a backup in a password manager. | YES | **NO** — listed in `.gitignore`. |
+| `IndigoSecrets_example.py` | **Template only** — empty placeholders. Shipped in the plugin bundle and on GitHub. | NO | YES. |
 
-The plugin reads these keys from `secrets.py` first, falling back to the plugin
+The plugin reads these keys from `IndigoSecrets.py` first, falling back to the plugin
 configuration dialog if the key is absent:
 
 ```python
@@ -52,7 +52,7 @@ PUSHOVER_USER_TOKEN = ""              # optional, for gateway offline/restored a
 
 If neither source provides `MQTT_BROKER`, the plugin logs an ERROR and waits.
 You can either fill in the dialog (Plugins → RAMSES ESP → Configure) or add the
-keys to `secrets.py` and reload the plugin.
+keys to `IndigoSecrets.py` and reload the plugin.
 
 ## Installation
 
@@ -139,7 +139,7 @@ reset
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 1.2.7 | 10-May-2026 | Plugin version is now read dynamically from Info.plist (`self.pluginVersion`) — no separate Python constant. Added bundled `plugin_utils.py` with `log_startup_banner()` invoked in `__init__`, plus `MenuItems.xml` with a Show Plugin Info menu callback. Hardcoded broker IP fallback removed; PluginConfig default cleared. `_read_prefs` now logs ERROR if no broker host is configured in either secrets.py or PluginConfig. `secrets.py` imports split into per-key try/except so a missing single key doesn't blank the rest. PluginConfig version note refreshed (was stuck at 1.1.8). |
+| 1.2.7 | 10-May-2026 | Plugin version is now read dynamically from Info.plist (`self.pluginVersion`) — no separate Python constant. Added bundled `plugin_utils.py` with `log_startup_banner()` invoked in `__init__`, plus `MenuItems.xml` with a Show Plugin Info menu callback. Hardcoded broker IP fallback removed; PluginConfig default cleared. `_read_prefs` now logs ERROR if no broker host is configured in either IndigoSecrets.py or PluginConfig. `IndigoSecrets.py` imports split into per-key try/except so a missing single key doesn't blank the rest. PluginConfig version note refreshed (was stuck at 1.1.8). |
 | 1.2.6 | 05-May-2026 | Add 5-minute delay before sending "gateway offline" Pushover notification — prevents spurious alerts on brief gateway hiccups. Restored alert is only sent if the offline alert actually fired. |
 | 1.2.5 | 08-Apr-2026 | Gateway offline/restored Pushover notifications via Pushover Indigo plugin. |
 | 1.2.4 | 04-Apr-2026 | MQTT broker migrated from .140 to .160 after Home Assistant VM decommission; broker now runs natively on the Indigo Mac. |
