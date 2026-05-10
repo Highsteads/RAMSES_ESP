@@ -11,7 +11,13 @@
 		<Label>MQTT Broker Settings</Label>
 	</Field>
 
-	<Field id="mqtt_broker_host" type="textfield" defaultValue="192.168.100.160">
+	<Field id="mqttSecretsInfo" type="label" fontSize="small" alignWithControl="true">
+		<Label>Broker host, username and password are read from secrets.py
+(MQTT_BROKER, MQTT_USERNAME, MQTT_PASSWORD) when present. The values
+below are used as a fallback only.</Label>
+	</Field>
+
+	<Field id="mqtt_broker_host" type="textfield" defaultValue="">
 		<Label>Broker Host:</Label>
 	</Field>
 
@@ -59,7 +65,7 @@ Clear this field and save to force re-discovery on next restart.</Label>
 	<Field id="sep4" type="separator"/>
 
 	<Field id="versionLabel" type="label" fontSize="small" alignWithControl="true">
-		<Label>Version 1.1.8  |  Author: CliveS and Claude Sonnet 4.6</Label>
+		<Label>Author: CliveS and Claude Sonnet 4.6  |  Version is shown in the startup banner (read from Info.plist)</Label>
 	</Field>
 
 </PluginConfig>

@@ -15,3 +15,10 @@ __pycache__/
 
 # Distribution
 RAMSES_ESP.indigoPlugin.zip
+
+# Claude Code context file — local only
+CLAUDE.md
+
+# Secrets — never commit; only secrets_example.py is published
+secrets.py
+**/secrets.py

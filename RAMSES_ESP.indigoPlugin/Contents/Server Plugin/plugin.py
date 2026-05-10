@@ -6,8 +6,25 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Sonnet 4.6
-# Date:        08-04-2026
-# Version:     1.2.5
+# Date:        10-05-2026
+# Version:     1.2.7
+#
+# v1.2.7 Changes (10-05-2026):
+# - Version is now read dynamically from Info.plist via self.pluginVersion
+#   (PLUGIN_VERSION constant removed — Info.plist is the single source of truth)
+# - Added log_startup_banner() via bundled plugin_utils.py
+# - Added MenuItems.xml + showPluginInfo callback (re-runs the banner on demand)
+# - Hardcoded broker IP fallback removed; PluginConfig default cleared. Plugin now
+#   logs ERROR if neither secrets.py MQTT_BROKER nor PluginConfig provides a host
+# - secrets.py imports split into per-key try/except so a missing key doesn't blank others
+# - PluginConfig version note refreshed (was stuck at 1.1.8)
+#
+# v1.2.6 Changes (05-05-2026):
+# - Add 5-minute delay before sending "gateway offline" Pushover notification
+#   * gateway_offline_since records when offline was first detected (time.time())
+#   * runConcurrentThread checks elapsed time; only alerts after GATEWAY_OFFLINE_DELAY
+#   * If gateway recovers within 5 min, timer is cancelled and no alerts are sent
+#   * "restored" alert is only sent if the offline alert was actually sent
 #
 # v1.2.5 Changes (08-04-2026):
 # - Gateway offline/restored Pushover notifications
@@ -34,23 +51,41 @@ import threading
 import time
 from datetime import datetime
 
+import os as _os
 import sys as _sys
-_sys.path.insert(0, "/Library/Application Support/Perceptive Automation")
+_sys.path.insert(0, _os.getcwd())   # bundled plugin_utils.py
+_sys.path.insert(0, "/Library/Application Support/Perceptive Automation")  # shared secrets.py
+
+# Per-key secrets imports — a missing single key must not blank the others.
 try:
-    from secrets import MQTT_BROKER, MQTT_USERNAME, MQTT_PASSWORD
+    from secrets import MQTT_BROKER
 except ImportError:
-    MQTT_BROKER   = "192.168.100.160"
+    MQTT_BROKER = ""
+try:
+    from secrets import MQTT_USERNAME
+except ImportError:
     MQTT_USERNAME = ""
+try:
+    from secrets import MQTT_PASSWORD
+except ImportError:
     MQTT_PASSWORD = ""
+
+try:
+    from plugin_utils import log_startup_banner
+except ImportError:
+    log_startup_banner = None
 
 # ==============================================================================
 # CONSTANTS
 # ==============================================================================
 
-PLUGIN_VERSION         = "1.2.5"
+# PLUGIN_VERSION is read dynamically from Info.plist by Indigo and passed to
+# Plugin.__init__ as `plugin_version` (exposed as self.pluginVersion).  Do NOT
+# add a hardcoded version constant here — Info.plist is the single source of truth.
 
 MQTT_KEEPALIVE         = 60            # seconds for MQTT keepalive ping
-MQTT_RECONNECT_DELAY   = 30            # seconds between reconnect attempts
+MQTT_RECONNECT_DELAY   = 60            # seconds between reconnect attempts
+GATEWAY_OFFLINE_DELAY  = 300           # seconds to wait before sending offline Pushover alert
 
 RAMSES_ROOT            = "RAMSES/GATEWAY"
 # Discovery: firmware publishes RAMSES/GATEWAY/<gw_id> = "online" (retained),
@@ -102,6 +137,12 @@ class Plugin(indigo.PluginBase):
 
     def __init__(self, plugin_id, plugin_display_name, plugin_version, plugin_prefs):
         super(Plugin, self).__init__(plugin_id, plugin_display_name, plugin_version, plugin_prefs)
+
+        if log_startup_banner:
+            log_startup_banner(plugin_id, plugin_display_name, plugin_version)
+        else:
+            indigo.server.log(f"{plugin_display_name} v{plugin_version} starting")
+
         self.debug = False
 
         # MQTT client state
@@ -131,7 +172,8 @@ class Plugin(indigo.PluginBase):
         # Gateway online/offline monitoring
         self.gateway_online        = None   # None=unknown, True=online, False=offline
         self.gateway_alert_sent    = False  # True after offline Pushover sent; reset on restore
-        self.pending_gateway_alert = None   # "offline" or "restored" — drained by runConcurrentThread
+        self.gateway_offline_since = None   # time.time() when offline first detected; None if not offline
+        self.pending_gateway_alert = None   # "restored" alert — drained by runConcurrentThread
 
         # Known zone -> Indigo device ID mapping (rebuilt from existing devs at startup)
         self.zone_devices       = {}                 # {zone_idx(int): indigo_dev_id(int)}
@@ -150,9 +192,8 @@ class Plugin(indigo.PluginBase):
     # --------------------------------------------------------------------------
 
     def startup(self):
-        self.logger.info("=" * 60)
-        self.logger.info(f"RAMSES ESP Plugin v{PLUGIN_VERSION} starting")
-        self.logger.info("=" * 60)
+        # Banner already logged by log_startup_banner() in __init__; just continue.
+        self.logger.info(f"RAMSES ESP Plugin v{self.pluginVersion} ready")
 
         if not PAHO_AVAILABLE:
             self.logger.error(
@@ -233,9 +274,19 @@ class Plugin(indigo.PluginBase):
                 if new_gw_id:
                     self._persist_gateway_id(new_gw_id)
 
-                # Send gateway online/offline Pushover alert if queued
+                # Send gateway "restored" Pushover alert if queued
                 if gateway_alert:
                     self._send_gateway_alert(gateway_alert)
+
+                # Send delayed "offline" alert once GATEWAY_OFFLINE_DELAY has elapsed
+                with self.pending_lock:
+                    offline_since    = self.gateway_offline_since
+                    alert_already_sent = self.gateway_alert_sent
+                if offline_since is not None and not alert_already_sent:
+                    if time.time() - offline_since >= GATEWAY_OFFLINE_DELAY:
+                        self._send_gateway_alert("offline")
+                        with self.pending_lock:
+                            self.gateway_alert_sent = True
 
                 # Apply zone name updates (store state + auto-rename device)
                 for zone_idx, name in zone_names.items():
@@ -731,13 +782,18 @@ class Plugin(indigo.PluginBase):
                 with self.pending_lock:
                     if payload_lower == "offline":
                         self.gateway_online = False
-                        if not self.gateway_alert_sent:
-                            self.pending_gateway_alert = "offline"
-                            self.gateway_alert_sent    = True
+                        # Start the delay timer only on the first "offline" detection.
+                        # runConcurrentThread sends the alert after GATEWAY_OFFLINE_DELAY
+                        # seconds — if the gateway recovers before then, the timer is
+                        # cancelled and no alert is sent.
+                        if self.gateway_offline_since is None and not self.gateway_alert_sent:
+                            self.gateway_offline_since = time.time()
                     elif payload_lower == "online":
                         prev_online = self.gateway_online
                         self.gateway_online = True
-                        if prev_online is False:   # was offline — notify restored
+                        self.gateway_offline_since = None   # cancel any pending offline timer
+                        # Send "restored" only if the offline alert was actually sent
+                        if prev_online is False and self.gateway_alert_sent:
                             self.pending_gateway_alert = "restored"
                             self.gateway_alert_sent    = False
                 return
@@ -1500,13 +1556,25 @@ class Plugin(indigo.PluginBase):
             return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def _read_prefs(self):
-        """Load MQTT settings and gateway ID from plugin preferences."""
+        """Load MQTT settings and gateway ID from plugin preferences.
+
+        Resolution order for each credential: secrets.py (master) -> PluginConfig.
+        If neither source provides the broker host, log an ERROR — the plugin
+        cannot connect without one.
+        """
         prefs = self.pluginPrefs
-        self.broker_host     = prefs.get("mqtt_broker_host",     MQTT_BROKER).strip()    or MQTT_BROKER
+        self.broker_host     = MQTT_BROKER   or prefs.get("mqtt_broker_host", "").strip()
         self.broker_port     = int(prefs.get("mqtt_broker_port", 1883))
-        self.broker_username = prefs.get("mqtt_username",        MQTT_USERNAME).strip() or MQTT_USERNAME
-        self.broker_password = prefs.get("mqtt_password",        MQTT_PASSWORD).strip() or MQTT_PASSWORD
+        self.broker_username = MQTT_USERNAME or prefs.get("mqtt_username",    "").strip()
+        self.broker_password = MQTT_PASSWORD or prefs.get("mqtt_password",    "").strip()
         self.debug           = bool(prefs.get("debug_logging",   False))
+
+        if not self.broker_host:
+            self.logger.error(
+                "No MQTT broker host configured. Set MQTT_BROKER in secrets.py "
+                "or fill in 'Broker Host' under Plugins -> RAMSES ESP -> Configure. "
+                "Plugin cannot connect to the gateway until this is set."
+            )
 
         # Extract gateway ID: use regex to find the first valid RAMSES device address
         # (format NN:NNNNNN, e.g. "18:203052"). This handles corruption where the user
@@ -1533,3 +1601,14 @@ class Plugin(indigo.PluginBase):
                 )
             except Exception as exc:
                 self.logger.warning(f"Could not save sanitised gateway ID: {exc}")
+
+    # --------------------------------------------------------------------------
+    # Menu callbacks
+    # --------------------------------------------------------------------------
+
+    def showPluginInfo(self, valuesDict=None, typeId=None):
+        """Re-run the startup banner on demand from the Plugins menu."""
+        if log_startup_banner:
+            log_startup_banner(self.pluginId, self.pluginDisplayName, self.pluginVersion)
+        else:
+            indigo.server.log(f"{self.pluginDisplayName} v{self.pluginVersion}")

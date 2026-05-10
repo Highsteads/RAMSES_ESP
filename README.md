@@ -25,20 +25,34 @@ The RAMSES-ESP is an ESP32-S3 + CC1101 RF USB dongle that bridges the Honeywell 
 
 | Requirement | Details |
 |-------------|---------|
-| Indigo | 2025.1 or later (API v3.4) |
-| Python | 3.11 (bundled with Indigo) |
+| Indigo | 2025.2 or later (API v3.4+) |
+| Python | 3.13 (bundled with Indigo 2025.2) |
 | Hardware | [RAMSES-ESP](https://github.com/IndaloTech/ramses_esp) USB gateway |
-| MQTT broker | Any (e.g. Mosquitto on Home Assistant) |
+| MQTT broker | Any (e.g. Mosquitto running locally) |
 | Heating system | Honeywell Evohome with RAMSES-II TRVs |
 
-## Credentials
+## Credentials — `secrets.py` vs `secrets_example.py`
 
-This plugin requires no entries in `secrets.py`. MQTT broker credentials are entered
-in the plugin configuration dialog (Plugins → RAMSES ESP → Configure) and are stored
-in Indigo's own plugin preferences.
+There are two files. Only one of them holds your real values:
 
-A `secrets_example.py` file is included as standard on all CliveS plugins. It is not
-used by this plugin.
+| File | Purpose | Real data? | Committed to GitHub? |
+|------|---------|------------|----------------------|
+| `secrets.py` | The **working file** the plugin reads at runtime. Lives at `/Library/Application Support/Perceptive Automation/secrets.py`. Keep a backup in a password manager. | YES | **NO** — listed in `.gitignore`. |
+| `secrets_example.py` | **Template only** — empty placeholders. Shipped in the plugin bundle and on GitHub. | NO | YES. |
+
+The plugin reads these keys from `secrets.py` first, falling back to the plugin
+configuration dialog if the key is absent:
+
+```python
+MQTT_BROKER         = "192.168.x.x"   # required — broker host
+MQTT_USERNAME       = ""              # optional
+MQTT_PASSWORD       = ""              # optional
+PUSHOVER_USER_TOKEN = ""              # optional, for gateway offline/restored alerts
+```
+
+If neither source provides `MQTT_BROKER`, the plugin logs an ERROR and waits.
+You can either fill in the dialog (Plugins → RAMSES ESP → Configure) or add the
+keys to `secrets.py` and reload the plugin.
 
 ## Installation
 
@@ -125,6 +139,10 @@ reset
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.2.7 | 10-May-2026 | Plugin version is now read dynamically from Info.plist (`self.pluginVersion`) — no separate Python constant. Added bundled `plugin_utils.py` with `log_startup_banner()` invoked in `__init__`, plus `MenuItems.xml` with a Show Plugin Info menu callback. Hardcoded broker IP fallback removed; PluginConfig default cleared. `_read_prefs` now logs ERROR if no broker host is configured in either secrets.py or PluginConfig. `secrets.py` imports split into per-key try/except so a missing single key doesn't blank the rest. PluginConfig version note refreshed (was stuck at 1.1.8). |
+| 1.2.6 | 05-May-2026 | Add 5-minute delay before sending "gateway offline" Pushover notification — prevents spurious alerts on brief gateway hiccups. Restored alert is only sent if the offline alert actually fired. |
+| 1.2.5 | 08-Apr-2026 | Gateway offline/restored Pushover notifications via Pushover Indigo plugin. |
+| 1.2.4 | 04-Apr-2026 | MQTT broker migrated from .140 to .160 after Home Assistant VM decommission; broker now runs natively on the Indigo Mac. |
 | 1.1.8 | 24-Feb-2026 | Setpoint command log lines downgraded to debug-only; RAMSES ESP entries no longer interleave with EvoHome script output in event log |
 | 1.1.7 | 24-Feb-2026 | Fix HomeKit showing OFF: enable SupportsHvacOperationMode + ShowCoolHeatEquipmentStateUI; re-fetch device after replacePluginPropsOnServer(); add SetHvacMode handler to lock zones to Heat |
 | 1.1.6 | 24-Feb-2026 | Add hvacHeaterIsOn (flame indicator) and hvacOperationMode updates on temp refresh for HomeKit |
