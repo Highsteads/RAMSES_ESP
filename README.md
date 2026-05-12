@@ -26,7 +26,7 @@ The RAMSES-ESP is an ESP32-S3 + CC1101 RF USB dongle that bridges the Honeywell 
 | Requirement | Details |
 |-------------|---------|
 | Indigo | 2025.2 or later (API v3.4+) |
-| Python | 3.13 (bundled with Indigo 2025.2) |
+| Python | 3.11+ (bundled with Indigo 2023.2+) |
 | Hardware | [RAMSES-ESP](https://github.com/IndaloTech/ramses_esp) USB gateway |
 | MQTT broker | Any (e.g. Mosquitto running locally) |
 | Heating system | Honeywell Evohome with RAMSES-II TRVs |
