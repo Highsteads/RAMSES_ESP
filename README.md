@@ -33,27 +33,24 @@ The RAMSES-ESP is an ESP32-S3 + CC1101 RF USB dongle that bridges the Honeywell 
 
 ## Credentials — `IndigoSecrets.py` vs `IndigoSecrets_example.py`
 
-There are two files. Only one of them holds your real values:
+This plugin (along with all CliveS Indigo plugins) reads sensitive values from
+a shared master credentials file at:
+
+`/Library/Application Support/Perceptive Automation/IndigoSecrets.py`
 
 | File | Purpose | Real data? | Committed to GitHub? |
 |------|---------|------------|----------------------|
-| `IndigoSecrets.py` | The **working file** the plugin reads at runtime. Lives at `/Library/Application Support/Perceptive Automation/IndigoSecrets.py`. Keep a backup in a password manager. | YES | **NO** — listed in `.gitignore`. |
-| `IndigoSecrets_example.py` | **Template only** — empty placeholders. Shipped in the plugin bundle and on GitHub. | NO | YES. |
+| `IndigoSecrets.py` | Working file the plugin reads at runtime. Keep a backup in a password manager. | YES | **NO** — listed in `.gitignore` |
+| `IndigoSecrets_example.py` | Template only — empty placeholders. Shipped in the plugin bundle. | NO | YES |
 
-The plugin reads these keys from `IndigoSecrets.py` first, falling back to the plugin
-configuration dialog if the key is absent:
+If you do not have `IndigoSecrets.py`, copy `IndigoSecrets_example.py` from
+the plugin bundle to that location and fill in your values. Or skip
+`IndigoSecrets.py` entirely and enter values via the plugin's configuration
+dialog — `IndigoSecrets.py` wins over the dialog when both are set.
 
-```python
-MQTT_BROKER         = "192.168.x.x"   # required — broker host
-MQTT_USERNAME       = ""              # optional
-MQTT_PASSWORD       = ""              # optional
-PUSHOVER_USER_TOKEN = ""              # optional, for gateway offline/restored alerts
-```
-
-If neither source provides `MQTT_BROKER`, the plugin logs an ERROR and waits.
-You can either fill in the dialog (Plugins → RAMSES ESP → Configure) or add the
-keys to `IndigoSecrets.py` and reload the plugin.
-
+If a required value is set in NEITHER source the plugin logs an ERROR
+pointing the user to either fill in the matching field or add the key to
+`IndigoSecrets.py`.
 ## Installation
 
 1. Go to the [Releases page](https://github.com/Highsteads/RAMSES_ESP/releases) and download `RAMSES_ESP.indigoPlugin.zip`

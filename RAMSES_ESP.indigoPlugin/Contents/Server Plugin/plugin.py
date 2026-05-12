@@ -15,8 +15,8 @@
 # - Added log_startup_banner() via bundled plugin_utils.py
 # - Added MenuItems.xml + showPluginInfo callback (re-runs the banner on demand)
 # - Hardcoded broker IP fallback removed; PluginConfig default cleared. Plugin now
-#   logs ERROR if neither secrets.py MQTT_BROKER nor PluginConfig provides a host
-# - secrets.py imports split into per-key try/except so a missing key doesn't blank others
+#   logs ERROR if neither IndigoSecrets.py MQTT_BROKER nor PluginConfig provides a host
+# - IndigoSecrets.py imports split into per-key try/except so a missing key doesn't blank others
 # - PluginConfig version note refreshed (was stuck at 1.1.8)
 #
 # v1.2.6 Changes (05-05-2026):
@@ -54,7 +54,7 @@ from datetime import datetime
 import os as _os
 import sys as _sys
 _sys.path.insert(0, _os.getcwd())   # bundled plugin_utils.py
-_sys.path.insert(0, "/Library/Application Support/Perceptive Automation")  # shared secrets.py
+_sys.path.insert(0, "/Library/Application Support/Perceptive Automation")  # shared IndigoSecrets.py
 
 # Per-key secrets imports — a missing single key must not blank the others.
 # Master file: IndigoSecrets.py (renamed from secrets.py on 10-May-2026 to
@@ -1560,7 +1560,7 @@ class Plugin(indigo.PluginBase):
     def _read_prefs(self):
         """Load MQTT settings and gateway ID from plugin preferences.
 
-        Resolution order for each credential: secrets.py (master) -> PluginConfig.
+        Resolution order for each credential: IndigoSecrets.py (master) -> PluginConfig.
         If neither source provides the broker host, log an ERROR — the plugin
         cannot connect without one.
         """
@@ -1573,7 +1573,7 @@ class Plugin(indigo.PluginBase):
 
         if not self.broker_host:
             self.logger.error(
-                "No MQTT broker host configured. Set MQTT_BROKER in secrets.py "
+                "No MQTT broker host configured. Set MQTT_BROKER in IndigoSecrets.py "
                 "or fill in 'Broker Host' under Plugins -> RAMSES ESP -> Configure. "
                 "Plugin cannot connect to the gateway until this is set."
             )
