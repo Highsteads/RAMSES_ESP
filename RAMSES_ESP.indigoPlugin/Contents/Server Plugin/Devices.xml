@@ -30,28 +30,28 @@ The device address is the zone index (0-11).</Label>
 			     These are updated directly by the plugin. -->
 
 			<!-- Zone operating mode from RAMSES-II: "schedule" or "permanent override" -->
-			<State id="zone_mode">
+			<State id="zoneMode">
 				<ValueType>String</ValueType>
 				<TriggerLabel>Zone Mode changed</TriggerLabel>
 				<ControlPageLabel>Zone Mode</ControlPageLabel>
 			</State>
 
 			<!-- Evohome controller device address e.g. 01:091567 -->
-			<State id="zone_controller_id">
+			<State id="zoneControllerId">
 				<ValueType>String</ValueType>
 				<TriggerLabel>Controller ID changed</TriggerLabel>
 				<ControlPageLabel>Controller ID</ControlPageLabel>
 			</State>
 
 			<!-- Zone name from Evohome controller (opcode 0004) e.g. "Living Room" -->
-			<State id="zone_name">
+			<State id="zoneName">
 				<ValueType>String</ValueType>
 				<TriggerLabel>Zone Name changed</TriggerLabel>
 				<ControlPageLabel>Zone Name</ControlPageLabel>
 			</State>
 
 			<!-- Timestamp of most recent message from this zone -->
-			<State id="last_seen">
+			<State id="lastSeen">
 				<ValueType>String</ValueType>
 				<TriggerLabel>Last Seen changed</TriggerLabel>
 				<ControlPageLabel>Last Seen</ControlPageLabel>

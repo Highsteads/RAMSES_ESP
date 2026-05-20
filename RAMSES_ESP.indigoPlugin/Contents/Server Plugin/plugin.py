@@ -6,8 +6,20 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Sonnet 4.6
-# Date:        10-05-2026
-# Version:     1.2.7
+# Date:        13-05-2026
+# Version:     1.2.8
+#
+# v1.2.8 Changes (13-05-2026) — BREAKING:
+# - State IDs renamed from snake_case to camelCase in Devices.xml + plugin.py:
+#     zone_mode          -> zoneMode
+#     zone_controller_id -> zoneControllerId
+#     zone_name          -> zoneName
+#     last_seen          -> lastSeen
+#   Indigo state IDs MUST be camelCase ASCII per CLAUDE.md rule. The
+#   underscore form worked statically but would have failed if these states
+#   were ever declared dynamically. EXISTING TRIGGERS / CONTROL PAGES /
+#   SCRIPTS REFERENCING THE OLD STATE NAMES MUST BE UPDATED. State history
+#   on existing zone devices is lost.
 #
 # v1.2.7 Changes (10-05-2026):
 # - Version is now read dynamically from Info.plist via self.pluginVersion
@@ -15,8 +27,8 @@
 # - Added log_startup_banner() via bundled plugin_utils.py
 # - Added MenuItems.xml + showPluginInfo callback (re-runs the banner on demand)
 # - Hardcoded broker IP fallback removed; PluginConfig default cleared. Plugin now
-#   logs ERROR if neither IndigoSecrets.py MQTT_BROKER nor PluginConfig provides a host
-# - IndigoSecrets.py imports split into per-key try/except so a missing key doesn't blank others
+#   logs ERROR if neither secrets.py MQTT_BROKER nor PluginConfig provides a host
+# - secrets.py imports split into per-key try/except so a missing key doesn't blank others
 # - PluginConfig version note refreshed (was stuck at 1.1.8)
 #
 # v1.2.6 Changes (05-05-2026):
@@ -54,7 +66,7 @@ from datetime import datetime
 import os as _os
 import sys as _sys
 _sys.path.insert(0, _os.getcwd())   # bundled plugin_utils.py
-_sys.path.insert(0, "/Library/Application Support/Perceptive Automation")  # shared IndigoSecrets.py
+_sys.path.insert(0, "/Library/Application Support/Perceptive Automation")  # shared secrets.py
 
 # Per-key secrets imports — a missing single key must not blank the others.
 # Master file: IndigoSecrets.py (renamed from secrets.py on 10-May-2026 to
@@ -216,21 +228,30 @@ class Plugin(indigo.PluginBase):
                 self.logger.info(f"  Restored Zone {zone_idx}: '{dev.name}' (dev ID {dev.id})")
                 restored += 1
 
-                # Seed zone_name from device name if still empty.
+                # Force state-list refresh BEFORE seeding (v1.2.8 snake_case ->
+                # camelCase rename means existing devices need Indigo to re-read
+                # the new state IDs from Devices.xml).
+                try:
+                    dev.stateListOrDisplayStateIdChanged()
+                    dev = indigo.devices[dev.id]
+                except Exception as exc:
+                    self.logger.debug(f"    state list refresh failed for '{dev.name}': {exc}")
+
+                # Seed zoneName from device name if still empty.
                 # The Evohome controller (01:) ignores RQ 0004 from an 18: gateway,
                 # so opcode 0004 only arrives when the controller broadcasts it naturally
-                # (on startup / name change). Until then, derive zone_name from the
+                # (on startup / name change). Until then, derive zoneName from the
                 # Indigo device name by stripping a trailing " Radiator" suffix.
                 # A real 0004 message will overwrite this when it eventually arrives.
-                if not dev.states.get("zone_name", ""):
+                if not dev.states.get("zoneName", ""):
                     derived = dev.name
                     if derived.endswith(" Radiator"):
                         derived = derived[:-len(" Radiator")]
                     try:
-                        dev.updateStatesOnServer([{"key": "zone_name", "value": derived}])
-                        self.logger.info(f"    zone_name seeded from device name: '{derived}'")
+                        dev.updateStatesOnServer([{"key": "zoneName", "value": derived}])
+                        self.logger.info(f"    zoneName seeded from device name: '{derived}'")
                     except Exception as exc:
-                        self.logger.warning(f"    Could not seed zone_name for '{dev.name}': {exc}")
+                        self.logger.warning(f"    Could not seed zoneName for '{dev.name}': {exc}")
 
             except (ValueError, Exception) as exc:
                 self.logger.warning(f"  Could not restore zone device '{dev.name}': {exc}")
@@ -241,7 +262,7 @@ class Plugin(indigo.PluginBase):
         self.logger.info("=" * 60)
         # Note: MQTT connection is started in runConcurrentThread after a short delay
 
-        # One-time flag: True once RQ 0004 has been sent to populate zone_name states.
+        # One-time flag: True once RQ 0004 has been sent to populate zoneName states.
         # Set False here so zone names are re-requested on every plugin restart.
         self._zone_names_requested = False
 
@@ -316,7 +337,7 @@ class Plugin(indigo.PluginBase):
 
                 # --- One-time zone name request ---
                 # Send RQ 0004 for all zones once we have MQTT + a known controller_id.
-                # Ensures zone_name states are populated immediately after startup rather
+                # Ensures zoneName states are populated immediately after startup rather
                 # than waiting for the controller to broadcast 0004 on its own schedule.
                 if not self._zone_names_requested and self.mqtt_connected and self.gateway_id:
                     if self._request_zone_names():
@@ -410,6 +431,16 @@ class Plugin(indigo.PluginBase):
 
     def deviceStartComm(self, dev):
         super(Plugin, self).deviceStartComm(dev)
+        # Force Indigo to re-read Devices.xml state list. This is required
+        # whenever <State> IDs in Devices.xml change (e.g. v1.2.8 snake_case
+        # -> camelCase rename). Without this, existing devices keep their
+        # cached state list and updateStatesOnServer() on the new state IDs
+        # silently fails with "state key X not defined".
+        try:
+            dev.stateListOrDisplayStateIdChanged()
+            dev = indigo.devices[dev.id]
+        except Exception as exc:
+            self.logger.debug(f"stateListOrDisplayStateIdChanged failed for '{dev.name}': {exc}")
         # Lock thermostat capabilities to heat-only on every start.
         # replacePluginPropsOnServer() triggers Indigo to rebuild the device's state list
         # based on the new props, so this must be called even if values haven't changed
@@ -595,7 +626,7 @@ class Plugin(indigo.PluginBase):
         for zone_idx, dev_id in zone_ids.items():
             try:
                 dev = indigo.devices[dev_id]
-                cid = dev.states.get("zone_controller_id", "")
+                cid = dev.states.get("zoneControllerId", "")
                 if cid and cid.startswith("01:"):
                     controller_id = cid
                     break
@@ -1181,10 +1212,10 @@ class Plugin(indigo.PluginBase):
                 # hvacHeaterIsOn is NOT set here: it's a built-in thermostat state that Indigo
                 # only creates after deviceStartComm() fires replacePluginPropsOnServer() to lock
                 # the thermostat capability props.  Indigo defaults it to False automatically.
-                {"key": "zone_mode",         "value": "schedule"},
-                {"key": "zone_controller_id","value": controller_id},
-                {"key": "zone_name",         "value": ""},
-                {"key": "last_seen",         "value": ts_now},
+                {"key": "zoneMode",         "value": "schedule"},
+                {"key": "zoneControllerId","value": controller_id},
+                {"key": "zoneName",         "value": ""},
+                {"key": "lastSeen",         "value": ts_now},
                 {"key": "online",            "value": "true"},
             ])
 
@@ -1225,14 +1256,14 @@ class Plugin(indigo.PluginBase):
                  "uiValue": f"{temp_c:.2f} degC"},
                 {"key": "hvacOperationMode", "value": indigo.kHvacMode.Heat},
                 {"key": "hvacHeaterIsOn",    "value": is_heating},
-                {"key": "last_seen",         "value": ts},
+                {"key": "lastSeen",         "value": ts},
                 {"key": "online",            "value": "true"},
             ]
-            # Only update zone_controller_id if non-empty — direct TRV messages
+            # Only update zoneControllerId if non-empty — direct TRV messages
             # (e.g. 04:xxxxxx --:------ 04:xxxxxx 30C9) carry no 01: controller
             # address and must not overwrite a valid stored ID with an empty string.
             if controller_id:
-                state_updates.append({"key": "zone_controller_id", "value": controller_id})
+                state_updates.append({"key": "zoneControllerId", "value": controller_id})
             dev.updateStatesOnServer(state_updates)
             if self.debug:
                 self.logger.debug(f"Zone {zone_idx} temp -> {temp_c:.2f}degC")
@@ -1242,10 +1273,10 @@ class Plugin(indigo.PluginBase):
     def _apply_setpoint_update(self, zone_idx, data):
         """Update setpointHeat (built-in thermostat state). Creates device if not yet known.
 
-        Called when a 2309 (setpoint-only) message arrives. Does NOT update zone_mode —
+        Called when a 2309 (setpoint-only) message arrives. Does NOT update zoneMode —
         a 2309 packet carries no mode information. The controller broadcasts I 2309 for all
         zones every ~60 s regardless of mode; inferring 'schedule' from it would overwrite
-        a valid 'permanent override' state. zone_mode is updated ONLY from 2349 broadcasts.
+        a valid 'permanent override' state. zoneMode is updated ONLY from 2349 broadcasts.
         If a 2349 arrives in the same poll cycle, _apply_mode_update() runs instead.
         """
         dev = self._find_zone_device(zone_idx)
@@ -1262,11 +1293,11 @@ class Plugin(indigo.PluginBase):
             state_updates = [
                 {"key": "setpointHeat", "value": round(setpoint_c, 2),
                  "uiValue": f"{setpoint_c:.2f} degC"},
-                {"key": "last_seen",    "value": ts},
+                {"key": "lastSeen",    "value": ts},
                 {"key": "online",       "value": "true"},
             ]
             if controller_id:
-                state_updates.append({"key": "zone_controller_id", "value": controller_id})
+                state_updates.append({"key": "zoneControllerId", "value": controller_id})
             dev.updateStatesOnServer(state_updates)
             if self.debug:
                 self.logger.debug(f"Zone {zone_idx} setpoint -> {setpoint_c:.2f}degC")
@@ -1274,7 +1305,7 @@ class Plugin(indigo.PluginBase):
             self.logger.error(f"Error updating Zone {zone_idx} setpoint state: {exc}")
 
     def _apply_mode_update(self, zone_idx, data):
-        """Update zone_mode and setpointHeat from 2349 (zone mode/override) message."""
+        """Update zoneMode and setpointHeat from 2349 (zone mode/override) message."""
         dev = self._find_zone_device(zone_idx)
         if dev is None:
             dev = self._create_zone_device(zone_idx, data.get("controller_id", ""))
@@ -1290,12 +1321,12 @@ class Plugin(indigo.PluginBase):
             state_updates = [
                 {"key": "setpointHeat", "value": round(setpoint_c, 2),
                  "uiValue": f"{setpoint_c:.2f} degC"},
-                {"key": "zone_mode",    "value": mode_str},
-                {"key": "last_seen",    "value": ts},
+                {"key": "zoneMode",    "value": mode_str},
+                {"key": "lastSeen",    "value": ts},
                 {"key": "online",       "value": "true"},
             ]
             if controller_id:
-                state_updates.append({"key": "zone_controller_id", "value": controller_id})
+                state_updates.append({"key": "zoneControllerId", "value": controller_id})
             dev.updateStatesOnServer(state_updates)
             if self.debug:
                 self.logger.debug(
@@ -1313,7 +1344,7 @@ class Plugin(indigo.PluginBase):
         try:
             dev.updateStatesOnServer([
                 {"key": "online",    "value": "false"},
-                {"key": "last_seen", "value": "MQTT disconnected"},
+                {"key": "lastSeen", "value": "MQTT disconnected"},
             ])
         except Exception as exc:
             self.logger.error(f"Error setting Zone {zone_idx} offline: {exc}")
@@ -1365,9 +1396,9 @@ class Plugin(indigo.PluginBase):
 
         try:
             # Always store the zone name as a device state
-            current_stored = dev.states.get("zone_name", "")
+            current_stored = dev.states.get("zoneName", "")
             if current_stored != name:
-                dev.updateStatesOnServer([{"key": "zone_name", "value": name}])
+                dev.updateStatesOnServer([{"key": "zoneName", "value": name}])
                 self.logger.info(f"Zone {zone_idx} name state set to '{name}'")
 
             # Rename the Indigo device only if it still has the auto-generated name
@@ -1429,7 +1460,7 @@ class Plugin(indigo.PluginBase):
                 )
                 return False
 
-            controller_id = dev.states.get("zone_controller_id", "")
+            controller_id = dev.states.get("zoneControllerId", "")
             if not controller_id or not controller_id.startswith("01:"):
                 self.logger.error(
                     f"Cannot publish setpoint for Zone {zone_idx} - "
@@ -1475,7 +1506,7 @@ class Plugin(indigo.PluginBase):
         """
         Send RQ 0004 for each zone to ask the controller to broadcast zone names.
         The controller responds with RP 0004 per zone, which is processed by
-        _parse_opcode_0004() — populating the zone_name state on each device.
+        _parse_opcode_0004() — populating the zoneName state on each device.
         Called once after MQTT connects when a controller_id is first available.
 
         Returns True if at least one RQ was sent; False if no controller_id yet.
@@ -1485,7 +1516,7 @@ class Plugin(indigo.PluginBase):
         for zone_idx in range(12):
             dev = self._find_zone_device(zone_idx)
             if dev:
-                cid = dev.states.get("zone_controller_id", "")
+                cid = dev.states.get("zoneControllerId", "")
                 if cid.startswith("01:"):
                     controller_id = cid
                     break
@@ -1511,7 +1542,7 @@ class Plugin(indigo.PluginBase):
 
         if success_count:
             self.logger.info(
-                f"Sent RQ 0004 for {success_count} zones to populate zone_name states"
+                f"Sent RQ 0004 for {success_count} zones to populate zoneName states"
             )
         return success_count > 0
 
@@ -1547,7 +1578,7 @@ class Plugin(indigo.PluginBase):
                 if not getattr(self, '_ntp_warn_logged', False):
                     self.logger.info(
                         f"Gateway timestamp is pre-NTP ({ts_raw[:19]}) - "
-                        f"firmware NTP not synced. Using local time for last_seen."
+                        f"firmware NTP not synced. Using local time for lastSeen."
                     )
                     self._ntp_warn_logged = True
                 return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1560,7 +1591,7 @@ class Plugin(indigo.PluginBase):
     def _read_prefs(self):
         """Load MQTT settings and gateway ID from plugin preferences.
 
-        Resolution order for each credential: IndigoSecrets.py (master) -> PluginConfig.
+        Resolution order for each credential: secrets.py (master) -> PluginConfig.
         If neither source provides the broker host, log an ERROR — the plugin
         cannot connect without one.
         """
@@ -1573,7 +1604,7 @@ class Plugin(indigo.PluginBase):
 
         if not self.broker_host:
             self.logger.error(
-                "No MQTT broker host configured. Set MQTT_BROKER in IndigoSecrets.py "
+                "No MQTT broker host configured. Set MQTT_BROKER in secrets.py "
                 "or fill in 'Broker Host' under Plugins -> RAMSES ESP -> Configure. "
                 "Plugin cannot connect to the gateway until this is set."
             )
