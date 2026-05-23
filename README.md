@@ -132,10 +132,24 @@ reset
 
 > **Note:** Use the `mqtt://` URL prefix — bare IP addresses cause a connection failure.
 
+## Logging
+
+Every log line is prefixed with a millisecond timestamp `[HH:MM:SS.mmm]` so
+events can be correlated tightly with other CliveS plugins (Device Activity
+Monitor uses the same convention).
+
+To turn the prefix off (or back on) at any time:
+
+**Plugins → RAMSES ESP → Toggle Timestamps in Log (on/off)**
+
+The setting is stored in `pluginPrefs` (`timestampEnabled`) and persists across
+restarts. Defaults to ON.
+
 ## Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.2.9 | 23-May-2026 | Millisecond timestamp `[HH:MM:SS.mmm]` prefix on every `self.logger` line via `plugin_utils.install_timestamp_filter()`; new "Toggle Timestamps in Log" menu item. |
 | 1.2.7 | 10-May-2026 | Plugin version is now read dynamically from Info.plist (`self.pluginVersion`) — no separate Python constant. Added bundled `plugin_utils.py` with `log_startup_banner()` invoked in `__init__`, plus `MenuItems.xml` with a Show Plugin Info menu callback. Hardcoded broker IP fallback removed; PluginConfig default cleared. `_read_prefs` now logs ERROR if no broker host is configured in either IndigoSecrets.py or PluginConfig. `IndigoSecrets.py` imports split into per-key try/except so a missing single key doesn't blank the rest. PluginConfig version note refreshed (was stuck at 1.1.8). |
 | 1.2.6 | 05-May-2026 | Add 5-minute delay before sending "gateway offline" Pushover notification — prevents spurious alerts on brief gateway hiccups. Restored alert is only sent if the offline alert actually fired. |
 | 1.2.5 | 08-Apr-2026 | Gateway offline/restored Pushover notifications via Pushover Indigo plugin. |
