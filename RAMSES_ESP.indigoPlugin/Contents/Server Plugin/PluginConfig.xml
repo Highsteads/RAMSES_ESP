@@ -12,7 +12,7 @@
 	</Field>
 
 	<Field id="mqttSecretsInfo" type="label" fontSize="small" alignWithControl="true">
-		<Label>Broker host, username and password are read from secrets.py
+		<Label>Broker host, username and password are read from IndigoSecrets.py
 (MQTT_BROKER, MQTT_USERNAME, MQTT_PASSWORD) when present. The values
 below are used as a fallback only.</Label>
 	</Field>
