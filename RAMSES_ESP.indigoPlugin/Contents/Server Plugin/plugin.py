@@ -7,7 +7,7 @@
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 4.7
 # Date:        23-05-2026
-# Version:     1.2.9
+# Version:     1.2.10
 #
 # v1.2.9 (23-05-2026): Millisecond timestamp [HH:MM:SS.mmm] prefix on every
 # log line via plugin_utils.install_timestamp_filter() — matches Device
@@ -498,6 +498,17 @@ class Plugin(indigo.PluginBase):
 
     def deviceStopComm(self, dev):
         super(Plugin, self).deviceStopComm(dev)
+
+    @staticmethod
+    def didDeviceCommPropertyChange(oldDevice, newDevice):
+        """Suppress unnecessary deviceStopComm/deviceStartComm cycles.
+
+        Zone devices are auto-discovered from RAMSES-II radio traffic and have
+        no user-editable pluginProps that justify a comm restart. Returning
+        False prevents Indigo from cycling comm on every internal
+        replacePluginPropsOnServer write.
+        """
+        return False
 
     def deviceDeleted(self, dev):
         """Remove the device from the zone_devices index when deleted by the user."""
