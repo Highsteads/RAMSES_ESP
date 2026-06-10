@@ -6,8 +6,8 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 4.7
-# Date:        23-05-2026
-# Version:     1.2.10
+# Date:        10-06-2026
+# Version:     1.2.11
 #
 # v1.2.9 (23-05-2026): Millisecond timestamp [HH:MM:SS.mmm] prefix on every
 # log line via plugin_utils.install_timestamp_filter() — matches Device
@@ -1035,7 +1035,7 @@ class Plugin(indigo.PluginBase):
         # The controller's own periodic all-zone 30C9 is the authoritative source.
         if not controller_id:
             if self.debug:
-                self.logger.debug(f"30C9: TRV-sourced packet ignored (no controller address)")
+                self.logger.debug("30C9: TRV-sourced packet ignored (no controller address)")
             return
 
         for i in range(block_count):

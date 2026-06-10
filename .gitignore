@@ -24,3 +24,6 @@ secrets.py
 IndigoSecrets.py
 **/secrets.py
 **/IndigoSecrets.py
+
+# Test runner artefacts
+.pytest_cache/
