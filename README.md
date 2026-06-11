@@ -188,6 +188,8 @@ restarts. Defaults to ON.
 - Protocol details from the [ramses_rf](https://github.com/zxdavb/ramses_rf) project
 - paho-mqtt 1.6.1 bundled from the Eclipse Paho project (EPL-2.0 / EDL-1.0)
 
-## License
+## Authors & licence
 
-MIT — see [LICENSE](LICENSE)
+Vibed into existence by **CliveS**, who knew what he wanted, argued until he got it, and tested it on a real house. Typed at inhuman speed by **Claude** (Anthropic), who mostly did as it was told.
+
+© 2026 CliveS · [MIT licence](LICENSE) — copy it, fork it, bend it, break it, fix it, ship it. If it breaks, you get to keep both pieces.
