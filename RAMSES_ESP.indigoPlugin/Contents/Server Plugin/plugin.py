@@ -5,9 +5,9 @@
 #              Connects to RAMSES-ESP wireless HVAC gateway via MQTT, auto-discovers
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
-# Author:      CliveS & Claude Opus 4.7
-# Date:        10-06-2026
-# Version:     1.2.11
+# Author:      CliveS & Claude Fable 5
+# Date:        12-06-2026 15:35
+# Version:     1.3.0
 #
 # v1.2.9 (23-05-2026): Millisecond timestamp [HH:MM:SS.mmm] prefix on every
 # log line via plugin_utils.install_timestamp_filter() — matches Device
@@ -200,6 +200,19 @@ class Plugin(indigo.PluginBase):
         self.gateway_offline_since = None   # time.time() when offline first detected; None if not offline
         self.pending_gateway_alert = None   # "restored" alert — drained by runConcurrentThread
 
+        # Power-cycle watchdog state (prefs loaded in _read_prefs; main thread only)
+        self.wd_enabled         = False
+        self.wd_plug_id         = 0      # Indigo relay device powering the gateway
+        self.wd_offline_minutes = 15
+        self.wd_off_seconds     = 10
+        self.wd_max_cycles      = 3
+        self.wd_plug_off_at     = None   # time.time() the plug was switched off (cycle in progress)
+        self.wd_on_retries      = 0      # failed attempts to switch the plug back on
+        self.wd_last_cycle_ts   = 0.0    # when the last cycle started
+        self.wd_cycle_day       = ""     # "YYYY-MM-DD" the daily counter belongs to
+        self.wd_cycles_today    = 0
+        self.wd_gave_up_alerted = False  # one "giving up" Pushover per outage
+
         # Known zone -> Indigo device ID mapping (rebuilt from existing devs at startup)
         self.zone_devices       = {}                 # {zone_idx(int): indigo_dev_id(int)}
         self.zone_lock          = threading.Lock()   # protects zone_devices
@@ -322,6 +335,9 @@ class Plugin(indigo.PluginBase):
                         with self.pending_lock:
                             self.gateway_alert_sent = True
 
+                # Power-cycle watchdog — recover a gateway that stays offline
+                self._watchdog_tick(offline_since)
+
                 # Apply zone name updates (store state + auto-rename device)
                 for zone_idx, name in zone_names.items():
                     try:
@@ -409,6 +425,27 @@ class Plugin(indigo.PluginBase):
                     )
         else:
             values_dict["discovered_gateway_id"] = ""
+
+        # Power-cycle watchdog fields
+        if values_dict.get("watchdog_enabled", False):
+            plug_str = str(values_dict.get("watchdog_plug_device", "")).strip()
+            if not plug_str or plug_str == "0" or not plug_str.isdigit():
+                errors_dict["watchdog_plug_device"] = (
+                    "Select the smart plug that powers the gateway"
+                )
+        for key, label, lo, hi in (
+            ("watchdog_offline_minutes", "Offline minutes", 5, 1440),
+            ("watchdog_off_seconds",     "Off seconds",     3, 120),
+            ("watchdog_max_cycles",      "Max cycles/day",  1, 20),
+        ):
+            raw = str(values_dict.get(key, "")).strip()
+            if raw:
+                try:
+                    val = int(raw)
+                    if not (lo <= val <= hi):
+                        errors_dict[key] = f"{label} must be between {lo} and {hi}"
+                except ValueError:
+                    errors_dict[key] = f"{label} must be a whole number"
 
         if len(errors_dict) > 0:
             return (False, values_dict, errors_dict)
@@ -1397,6 +1434,124 @@ class Plugin(indigo.PluginBase):
         except Exception as exc:
             self.logger.error(f"[Gateway] Pushover send failed: {exc}")
 
+    def _watchdog_tick(self, offline_since):
+        """Gateway power-cycle watchdog. Main thread only — called every main-loop pass.
+
+        ramses_esp firmware stops retrying WiFi after a failed reconnect (upstream
+        issue #27, unfixed as of 0.6.6c) so a stuck gateway can only be recovered
+        by cutting its power. If the gateway has been offline for longer than the
+        configured threshold, switch off the smart plug that feeds it, wait
+        wd_off_seconds, switch it back on. Repeat cycles are spaced a full
+        threshold apart and capped per day so a genuinely dead stick is not
+        bounced forever.
+        """
+        if not self.wd_enabled or not self.wd_plug_id:
+            return
+        now = time.time()
+
+        # Phase 2 of a cycle in progress: restore power after the off-time.
+        # On failure keep retrying each loop pass (plug must not stay off);
+        # after 5 failed attempts alert and give up the restore.
+        if self.wd_plug_off_at is not None:
+            if now - self.wd_plug_off_at < self.wd_off_seconds:
+                return
+            try:
+                indigo.device.turnOn(self.wd_plug_id)
+                self.logger.info("[Watchdog] Gateway plug back ON — gateway rebooting")
+                self.wd_plug_off_at = None
+                self.wd_on_retries  = 0
+            except Exception as exc:
+                self.wd_on_retries += 1
+                self.logger.error(
+                    f"[Watchdog] Failed to switch gateway plug back on "
+                    f"(attempt {self.wd_on_retries}/5): {exc}"
+                )
+                if self.wd_on_retries >= 5:
+                    self.wd_plug_off_at = None
+                    self.wd_on_retries  = 0
+                    self._send_watchdog_pushover(
+                        "RAMSES watchdog NEEDS HELP",
+                        "Could not switch the gateway plug back ON after a power "
+                        "cycle — the gateway may be without power. Check the plug.",
+                        priority="2",
+                    )
+            return
+
+        if offline_since is None:
+            self.wd_gave_up_alerted = False   # gateway online — re-arm for next outage
+            return
+
+        offline_secs = now - offline_since
+        if offline_secs < self.wd_offline_minutes * 60:
+            return
+        # Space repeat cycles a full threshold apart (gives the gateway time to boot,
+        # join WiFi and publish its LWT before we judge the cycle a failure)
+        if now - self.wd_last_cycle_ts < self.wd_offline_minutes * 60:
+            return
+
+        today = time.strftime("%Y-%m-%d")
+        if self.wd_cycle_day != today:
+            self.wd_cycle_day    = today
+            self.wd_cycles_today = 0
+        if self.wd_cycles_today >= self.wd_max_cycles:
+            if not self.wd_gave_up_alerted:
+                self.wd_gave_up_alerted = True
+                self.logger.warning(
+                    f"[Watchdog] Gateway still offline but daily cycle cap "
+                    f"({self.wd_max_cycles}) reached — manual attention needed"
+                )
+                self._send_watchdog_pushover(
+                    "RAMSES watchdog giving up",
+                    f"Gateway still offline after {self.wd_max_cycles} power "
+                    f"cycle(s) today — it needs a human.",
+                    priority="1",
+                )
+            return
+
+        if self.wd_plug_id not in indigo.devices:
+            self.logger.error(
+                f"[Watchdog] Configured plug device {self.wd_plug_id} not found — "
+                f"reselect it in Plugins -> RAMSES ESP -> Configure"
+            )
+            return
+
+        try:
+            indigo.device.turnOff(self.wd_plug_id)
+        except Exception as exc:
+            self.logger.error(f"[Watchdog] Failed to switch gateway plug off: {exc}")
+            return
+        self.wd_plug_off_at   = now
+        self.wd_last_cycle_ts = now
+        self.wd_cycles_today += 1
+        mins = int(offline_secs // 60)
+        self.logger.warning(
+            f"[Watchdog] Gateway offline {mins}m — power-cycling its plug "
+            f"(off {self.wd_off_seconds}s, cycle #{self.wd_cycles_today} of "
+            f"{self.wd_max_cycles} today)"
+        )
+        self._send_watchdog_pushover(
+            "RAMSES watchdog power-cycled gateway",
+            f"Gateway offline {mins}m — plug cycled "
+            f"(#{self.wd_cycles_today} of {self.wd_max_cycles} today).",
+        )
+
+    def _send_watchdog_pushover(self, title, message, priority="0"):
+        """Pushover for watchdog events. Main thread only."""
+        try:
+            pushover = indigo.server.getPlugin("io.thechad.indigoplugin.pushover")
+            if pushover and pushover.isEnabled():
+                pushover.executeAction("send", props={
+                    "msgTitle":    title,
+                    "msgBody":     message,
+                    "msgPriority": priority,
+                    "msgSound":    "vibrate",
+                })
+                self.logger.info(f"[Watchdog] Pushover sent: {title}")
+            else:
+                self.logger.warning(f"[Watchdog] Pushover not enabled — alert not sent: {title}")
+        except Exception as exc:
+            self.logger.error(f"[Watchdog] Pushover send failed: {exc}")
+
     def _apply_zone_name_update(self, zone_idx, name):
         """
         Store zone name in device state and rename the Indigo device if it still has
@@ -1618,11 +1773,36 @@ class Plugin(indigo.PluginBase):
         cannot connect without one.
         """
         prefs = self.pluginPrefs
+
+        def _as_int(key, default, lo, hi):
+            """Coerce a pref to int with guard — prefs become strings after a dialog save."""
+            try:
+                val = int(str(prefs.get(key, default)).strip())
+            except (ValueError, TypeError):
+                self.logger.warning(f"Invalid value for '{key}' — using default {default}")
+                return default
+            return max(lo, min(hi, val))
+
         self.broker_host     = MQTT_BROKER   or prefs.get("mqtt_broker_host", "").strip()
-        self.broker_port     = int(prefs.get("mqtt_broker_port", 1883))
+        self.broker_port     = _as_int("mqtt_broker_port", 1883, 1, 65535)
         self.broker_username = MQTT_USERNAME or prefs.get("mqtt_username",    "").strip()
         self.broker_password = MQTT_PASSWORD or prefs.get("mqtt_password",    "").strip()
         self.debug           = bool(prefs.get("debug_logging",   False))
+
+        # Power-cycle watchdog settings
+        self.wd_enabled         = bool(prefs.get("watchdog_enabled", False))
+        try:
+            self.wd_plug_id = int(str(prefs.get("watchdog_plug_device", "")).strip() or 0)
+        except (ValueError, TypeError):
+            self.wd_plug_id = 0
+        self.wd_offline_minutes = _as_int("watchdog_offline_minutes", 15, 5, 1440)
+        self.wd_off_seconds     = _as_int("watchdog_off_seconds",     10, 3, 120)
+        self.wd_max_cycles      = _as_int("watchdog_max_cycles",       3, 1, 20)
+        if self.wd_enabled and not self.wd_plug_id:
+            self.logger.warning(
+                "Power-cycle watchdog is enabled but no plug device is selected — "
+                "watchdog is inactive until one is chosen in Configure"
+            )
 
         if not self.broker_host:
             self.logger.error(

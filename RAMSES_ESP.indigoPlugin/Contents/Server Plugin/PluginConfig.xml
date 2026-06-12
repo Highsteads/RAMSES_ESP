@@ -53,6 +53,44 @@ Clear this field and save to force re-discovery on next restart.</Label>
 
 	<Field id="sep3" type="separator"/>
 
+	<Field id="watchdogHeader" type="label" fontSize="regular">
+		<Label>Gateway Power-Cycle Watchdog</Label>
+	</Field>
+
+	<Field id="watchdogInfo" type="label" fontSize="small" alignWithControl="true">
+		<Label>The ramses_esp firmware stops retrying WiFi after a failed reconnect,
+so a gateway that drops off the network stays off until its power is cycled.
+If the gateway is powered from a smart plug controlled by Indigo, the plugin
+can cycle that plug automatically after a prolonged offline period.</Label>
+	</Field>
+
+	<Field id="watchdog_enabled" type="checkbox" defaultValue="false">
+		<Label>Enable Power-Cycle Watchdog:</Label>
+		<Description>Cycle the gateway's smart plug when it stays offline</Description>
+	</Field>
+
+	<Field id="watchdog_plug_device" type="menu" enabledBindingId="watchdog_enabled">
+		<Label>Gateway Power Plug:</Label>
+		<List class="indigo.devices" filter="indigo.relay"/>
+	</Field>
+
+	<Field id="watchdog_offline_minutes" type="textfield" defaultValue="15" enabledBindingId="watchdog_enabled">
+		<Label>Cycle after offline (minutes):</Label>
+		<Description>5-1440. Repeat cycles are spaced this far apart too</Description>
+	</Field>
+
+	<Field id="watchdog_off_seconds" type="textfield" defaultValue="10" enabledBindingId="watchdog_enabled">
+		<Label>Plug off time (seconds):</Label>
+		<Description>3-120</Description>
+	</Field>
+
+	<Field id="watchdog_max_cycles" type="textfield" defaultValue="3" enabledBindingId="watchdog_enabled">
+		<Label>Max cycles per day:</Label>
+		<Description>1-20. After this the watchdog alerts and waits for a human</Description>
+	</Field>
+
+	<Field id="sep_wd" type="separator"/>
+
 	<Field id="debugHeader" type="label" fontSize="regular">
 		<Label>Logging</Label>
 	</Field>

@@ -18,6 +18,7 @@ The RAMSES-ESP is an ESP32-S3 + CC1101 RF USB dongle that bridges the Honeywell 
 - **Zone names** — Auto-renames devices from Evohome controller (opcode 0004)
 - **RAMSES folder** — All zone devices created inside a dedicated Indigo device folder
 - **Robust MQTT** — Auto-reconnects on broker restart; all devices go offline cleanly on disconnect
+- **Power-cycle watchdog** — If the gateway stays offline, the plugin can cycle the smart plug that powers it (the ramses_esp firmware stops retrying WiFi after a failed reconnect, so only a power cycle recovers it)
 - **No cloud** — Fully local via MQTT; works when Honeywell EU servers are down
 - **Bundled paho** — paho-mqtt 1.6.1 included; no separate installation needed
 
@@ -149,6 +150,7 @@ restarts. Defaults to ON.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.3.0 | 12-Jun-2026 | Gateway power-cycle watchdog. If the gateway stays offline beyond a configurable threshold (default 15 minutes), the plugin switches off the Indigo smart plug that powers it, waits a few seconds, and switches it back on. Repeat cycles are spaced a full threshold apart and capped per day (default 3), with Pushover notes on every cycle and a final "needs a human" alert when the cap is reached. Configure it under Plugins -> RAMSES ESP -> Configure. Born of a real incident: a WiFi config change knocked the gateway off the network and the firmware never tried to rejoin (upstream ramses_esp issue #27), so heating data was silently absent for ten days. Also guarded the broker-port preference against non-numeric values. |
 | 1.2.9 | 23-May-2026 | Millisecond timestamp `[HH:MM:SS.mmm]` prefix on every `self.logger` line via `plugin_utils.install_timestamp_filter()`; new "Toggle Timestamps in Log" menu item. |
 | 1.2.7 | 10-May-2026 | Plugin version is now read dynamically from Info.plist (`self.pluginVersion`) — no separate Python constant. Added bundled `plugin_utils.py` with `log_startup_banner()` invoked in `__init__`, plus `MenuItems.xml` with a Show Plugin Info menu callback. Hardcoded broker IP fallback removed; PluginConfig default cleared. `_read_prefs` now logs ERROR if no broker host is configured in either IndigoSecrets.py or PluginConfig. `IndigoSecrets.py` imports split into per-key try/except so a missing single key doesn't blank the rest. PluginConfig version note refreshed (was stuck at 1.1.8). |
 | 1.2.6 | 05-May-2026 | Add 5-minute delay before sending "gateway offline" Pushover notification — prevents spurious alerts on brief gateway hiccups. Restored alert is only sent if the offline alert actually fired. |
