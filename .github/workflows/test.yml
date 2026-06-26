@@ -19,3 +19,7 @@ jobs:
         run: |
           pip install ruff
           ruff check .
+      - name: Unit tests (pytest — indigo/paho stubbed, no hardware needed)
+        run: |
+          pip install pytest
+          python -m pytest tests -q

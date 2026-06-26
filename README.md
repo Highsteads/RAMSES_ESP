@@ -27,7 +27,7 @@ The RAMSES-ESP is an ESP32-S3 + CC1101 RF USB dongle that bridges the Honeywell 
 | Requirement | Details |
 |-------------|---------|
 | Indigo | 2025.2 or later (API v3.4+) |
-| Python | 3.11+ (bundled with Indigo 2023.2+) |
+| Python | 3.13 (bundled with Indigo 2025.2) |
 | Hardware | [RAMSES-ESP](https://github.com/IndaloTech/ramses_esp) USB gateway |
 | MQTT broker | Any (e.g. Mosquitto running locally) |
 | Heating system | Honeywell Evohome with RAMSES-II TRVs |
@@ -85,10 +85,10 @@ The plugin subscribes to `RAMSES/GATEWAY/<gw_id>/rx` and processes three opcodes
 |--------|---------|--------|
 | `30C9` | Zone current temperature | Updates `temperatureInput1` state |
 | `2309` | Zone setpoint | Updates `setpointHeat` state |
-| `2349` | Zone mode / override | Updates `zone_mode` state |
+| `2349` | Zone mode / override | Updates `zoneMode` state |
 | `0004` | Zone name | Renames the Indigo device |
 
-Setpoint commands are published to `RAMSES/GATEWAY/<gw_id>/tx` as W 2309 RAMSES-II packets.
+Setpoint commands are published to `RAMSES/GATEWAY/<gw_id>/tx` as W 2349 permanent-override RAMSES-II packets, so the Evohome schedule and EU cloud cannot cancel them at the next period boundary.
 
 ## Device States
 
@@ -98,10 +98,10 @@ Each zone device exposes these states:
 |-------|------|-------------|
 | `temperatureInput1` | Float | Current zone temperature (degC) — shown in device list |
 | `setpointHeat` | Float | Current heat setpoint (degC) |
-| `zone_mode` | String | `schedule` or `permanent override` |
-| `zone_controller_id` | String | Evohome controller address e.g. `01:091567` |
-| `zone_name` | String | Zone name from Evohome controller |
-| `last_seen` | String | Timestamp of most recent message |
+| `zoneMode` | String | `schedule` or `permanent override` |
+| `zoneControllerId` | String | Evohome controller address e.g. `01:091567` |
+| `zoneName` | String | Zone name from Evohome controller |
+| `lastSeen` | String | Timestamp of most recent message |
 | `online` | String | `true` / `false` (MQTT connectivity) |
 
 ## Controlling Setpoints
@@ -150,6 +150,7 @@ restarts. Defaults to ON.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.4.0 | 26-Jun-2026 | A thorough multi-agent code review and the plugin's first proper test suite (34 tests covering the protocol decoders, the setpoint encoder, the gateway-id sanitiser and the watchdog). The headline fix is the power-cycle watchdog, which now does its off-and-on inside a single tick with a guaranteed restore, so a plugin reload or a crash mid-cycle can no longer leave the gateway switched off and the heating dead. A gateway that was already offline when the plugin restarts is now correctly seen as offline rather than being read as online, which used to quietly stop the watchdog ever arming. Alongside that, stray RAMSES domain codes no longer create phantom zone devices, an unknown setpoint no longer wipes a good one to zero, a zone marked offline no longer shows as actively heating in HomeKit, and the setpoint floor moved from 5 to 8 degC to match what the Evohome controller actually applies. Plenty of smaller tidying came along for the ride. |
 | 1.3.0 | 12-Jun-2026 | Gateway power-cycle watchdog. If the gateway stays offline beyond a configurable threshold (default 15 minutes), the plugin switches off the Indigo smart plug that powers it, waits a few seconds, and switches it back on. Repeat cycles are spaced a full threshold apart and capped per day (default 3), with Pushover notes on every cycle and a final "needs a human" alert when the cap is reached. Configure it under Plugins -> RAMSES ESP -> Configure. Born of a real incident: a WiFi config change knocked the gateway off the network and the firmware never tried to rejoin (upstream ramses_esp issue #27), so heating data was silently absent for ten days. Also guarded the broker-port preference against non-numeric values. |
 | 1.2.9 | 23-May-2026 | Millisecond timestamp `[HH:MM:SS.mmm]` prefix on every `self.logger` line via `plugin_utils.install_timestamp_filter()`; new "Toggle Timestamps in Log" menu item. |
 | 1.2.7 | 10-May-2026 | Plugin version is now read dynamically from Info.plist (`self.pluginVersion`) — no separate Python constant. Added bundled `plugin_utils.py` with `log_startup_banner()` invoked in `__init__`, plus `MenuItems.xml` with a Show Plugin Info menu callback. Hardcoded broker IP fallback removed; PluginConfig default cleared. `_read_prefs` now logs ERROR if no broker host is configured in either IndigoSecrets.py or PluginConfig. `IndigoSecrets.py` imports split into per-key try/except so a missing single key doesn't blank the rest. PluginConfig version note refreshed (was stuck at 1.1.8). |

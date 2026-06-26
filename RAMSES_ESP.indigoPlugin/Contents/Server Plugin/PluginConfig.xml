@@ -103,7 +103,7 @@ can cycle that plug automatically after a prolonged offline period.</Label>
 	<Field id="sep4" type="separator"/>
 
 	<Field id="versionLabel" type="label" fontSize="small" alignWithControl="true">
-		<Label>Author: CliveS and Claude Sonnet 4.6  |  Version is shown in the startup banner (read from Info.plist)</Label>
+		<Label>Author: CliveS and Claude  |  Version is shown in the startup banner (read from Info.plist)</Label>
 	</Field>
 
 </PluginConfig>

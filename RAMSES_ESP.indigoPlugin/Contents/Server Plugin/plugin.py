@@ -5,9 +5,27 @@
 #              Connects to RAMSES-ESP wireless HVAC gateway via MQTT, auto-discovers
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
-# Author:      CliveS & Claude Fable 5
-# Date:        12-06-2026 15:35
-# Version:     1.3.0
+# Author:      CliveS & Claude Opus 4.8
+# Date:        26-06-2026
+# Version:     1.4.0
+#
+# v1.4.0 (26-06-2026): Deep-review hardening (multi-agent review, 24 verified findings).
+# - Watchdog crash-safety: the plug OFF/ON now runs inside a SINGLE main-loop tick with a
+#   try/finally restore, so a reload, disable or crash mid-cycle can no longer strand the
+#   gateway powered off. Daily cycle counters are persisted across reloads. The decision
+#   logic is extracted to the pure, unit-tested _watchdog_decision().
+# - A retained 'offline' LWT seen on FIRST gateway discovery is no longer mis-read as online
+#   (otherwise the watchdog could never arm after a plugin restart during an outage).
+# - Main loop wrapped for per-pass failure isolation (one bad pass logs and continues).
+# - RAMSES domain codes (0xF9/FA/FC) no longer spawn spurious "RAMSES Zone 252" devices.
+# - A 2349 with an unknown setpoint (raw 0x7FFF) no longer clobbers setpointHeat with 0.0.
+# - hvacHeaterIsOn is cleared when a zone goes offline (HomeKit no longer shows a dead zone
+#   as actively heating).
+# - Setpoint floor raised 5 -> 8 degC to match the Evohome frost clamp (optimistic UI honest).
+# - First test suite added (pure decoders, setpoint encoder, gateway-id sanitiser, watchdog FSM).
+# - Smaller: closedPrefsConfigUi resubscribes on a CHANGED gateway ID; 0004 odd-length name
+#   trim; gateway-id sanitiser shared by validate + read; emergency Pushover downgraded to
+#   the reliable high tier; assorted comment/author-label corrections.
 #
 # v1.2.9 (23-05-2026): Millisecond timestamp [HH:MM:SS.mmm] prefix on every
 # log line via plugin_utils.install_timestamp_filter() — matches Device
@@ -73,7 +91,7 @@ _sys.path.insert(0, _os.getcwd())   # bundled plugin_utils.py
 _sys.path.insert(0, "/Library/Application Support/Perceptive Automation")  # shared IndigoSecrets.py
 
 # Per-key secrets imports — a missing single key must not blank the others.
-# Master file: IndigoSecrets.py (renamed from IndigoSecrets.py on 10-May-2026 to
+# Master file: IndigoSecrets.py (renamed from secrets.py on 10-May-2026 to
 # avoid shadowing Python's stdlib `secrets` module).
 try:
     from IndigoSecrets import MQTT_BROKER
@@ -110,9 +128,10 @@ MQTT_RECONNECT_DELAY   = 60            # seconds between reconnect attempts
 GATEWAY_OFFLINE_DELAY  = 300           # seconds to wait before sending offline Pushover alert
 
 RAMSES_ROOT            = "RAMSES/GATEWAY"
-# Discovery: firmware publishes RAMSES/GATEWAY/<gw_id> = "online" (retained),
-# plus RAMSES/GATEWAY/<gw_id>/info/firmware and .../info/version as sub-topics.
-# We use a single-level wildcard on the gateway ID segment to catch the presence topic.
+# Discovery: the firmware publishes RAMSES/GATEWAY/<gw_id> = "online" (retained) as the
+# gateway presence topic, with an MQTT LWT of "offline". The single-level '+' wildcard below
+# matches ONLY that 3-segment presence topic — the deeper .../info/firmware and .../info/version
+# sub-topics are intentionally NOT subscribed (the plugin doesn't use the firmware metadata).
 TOPIC_INFO_WILDCARD    = "RAMSES/GATEWAY/+"
 
 # RAMSES-II opcodes (v1.0 scope: zone thermostat messages only)
@@ -132,6 +151,11 @@ ZONE_MODE_PERMANENT    = 0x02          # permanent override
 # Indigo device type ID (must match Devices.xml)
 DEVICE_TYPE_ID         = "ramsesZoneThermostat"
 
+# Evohome supports at most 12 heating zones (indices 0-11). RAMSES domain codes such as
+# 0xF9 (CH), 0xFA (DHW), 0xFC (boiler relay) also appear as the "zone" byte in 30C9/2309
+# broadcasts — they are NOT zones and must never spawn a spurious "RAMSES Zone 252" device.
+MAX_ZONES              = 12
+
 # Device folder name — all zone devices are created inside this Indigo folder
 DEVICE_FOLDER_NAME     = "RAMSES"
 
@@ -142,8 +166,10 @@ MAIN_LOOP_SLEEP        = 5.0           # seconds
 # The RAMSES-ESP firmware publishes epoch time (1970) until NTP syncs successfully.
 EPOCH_SENTINEL_YEAR    = 2020
 
-# Setpoint limits
-SETPOINT_MIN_C         = 5.0
+# Setpoint limits. The Evohome/RAMSES controller enforces a frost floor of ~8 degC, so a
+# command below 8 is silently clamped to ~8 by the controller. We mirror that floor here so
+# the optimistic setpointHeat shown in the UI matches what the zone actually applies.
+SETPOINT_MIN_C         = 8.0
 SETPOINT_MAX_C         = 35.0
 
 
@@ -200,17 +226,18 @@ class Plugin(indigo.PluginBase):
         self.gateway_offline_since = None   # time.time() when offline first detected; None if not offline
         self.pending_gateway_alert = None   # "restored" alert — drained by runConcurrentThread
 
-        # Power-cycle watchdog state (prefs loaded in _read_prefs; main thread only)
+        # Power-cycle watchdog state (prefs loaded in _read_prefs; main thread only).
+        # The off/on cycle runs inside a SINGLE main-loop tick (see _power_cycle_plug) with a
+        # try/finally restore, so there is no cross-tick "plug is off" state that a reload or
+        # crash could strand. The daily counters are persisted so a reload can't reset the cap.
         self.wd_enabled         = False
         self.wd_plug_id         = 0      # Indigo relay device powering the gateway
         self.wd_offline_minutes = 15
         self.wd_off_seconds     = 10
         self.wd_max_cycles      = 3
-        self.wd_plug_off_at     = None   # time.time() the plug was switched off (cycle in progress)
-        self.wd_on_retries      = 0      # failed attempts to switch the plug back on
-        self.wd_last_cycle_ts   = 0.0    # when the last cycle started
-        self.wd_cycle_day       = ""     # "YYYY-MM-DD" the daily counter belongs to
-        self.wd_cycles_today    = 0
+        self.wd_last_cycle_ts   = 0.0    # time.time() the last cycle started (persisted)
+        self.wd_cycle_day       = ""     # "YYYY-MM-DD" the daily counter belongs to (persisted)
+        self.wd_cycles_today    = 0      # cycles done today, capped at wd_max_cycles (persisted)
         self.wd_gave_up_alerted = False  # one "giving up" Pushover per outage
 
         # Known zone -> Indigo device ID mapping (rebuilt from existing devs at startup)
@@ -299,96 +326,114 @@ class Plugin(indigo.PluginBase):
     # --------------------------------------------------------------------------
 
     def runConcurrentThread(self):
-        """Main plugin loop. Starts MQTT, drains pending zone updates every 5s."""
+        """Main plugin loop. Starts MQTT, drains pending zone updates every 5s.
+
+        Each pass is wrapped so one unexpected error LOGS AND CONTINUES rather than
+        killing the loop (and with it all zone updates + the watchdog). self.StopThread
+        is always re-raised so the plugin still shuts down cleanly.
+        """
         try:
             # Give startup() a moment to complete before connecting
             self.sleep(2)
             self._mqtt_connect()
 
             while True:
-                # --- Drain pending updates from MQTT callbacks ---
-                with self.pending_lock:
-                    updates    = dict(self.pending_updates)
-                    self.pending_updates.clear()
-                    zone_names = dict(self.pending_zone_names)
-                    self.pending_zone_names.clear()
-                    new_gw_id     = self.pending_gateway_id
-                    self.pending_gateway_id = ""
-                    gateway_alert = self.pending_gateway_alert
-                    self.pending_gateway_alert = None
-
-                # Persist new gateway ID to prefs (must be done on main thread)
-                if new_gw_id:
-                    self._persist_gateway_id(new_gw_id)
-
-                # Send gateway "restored" Pushover alert if queued
-                if gateway_alert:
-                    self._send_gateway_alert(gateway_alert)
-
-                # Send delayed "offline" alert once GATEWAY_OFFLINE_DELAY has elapsed
-                with self.pending_lock:
-                    offline_since    = self.gateway_offline_since
-                    alert_already_sent = self.gateway_alert_sent
-                if offline_since is not None and not alert_already_sent:
-                    if time.time() - offline_since >= GATEWAY_OFFLINE_DELAY:
-                        self._send_gateway_alert("offline")
-                        with self.pending_lock:
-                            self.gateway_alert_sent = True
-
-                # Power-cycle watchdog — recover a gateway that stays offline
-                self._watchdog_tick(offline_since)
-
-                # Apply zone name updates (store state + auto-rename device)
-                for zone_idx, name in zone_names.items():
-                    try:
-                        self._apply_zone_name_update(zone_idx, name)
-                    except Exception as exc:
-                        self.logger.error(f"Error applying name for Zone {zone_idx}: {exc}")
-
-                for zone_idx, data in updates.items():
-                    try:
-                        # Apply each update type present in the data dict.
-                        # Offline flag is set by _on_disconnect and takes priority.
-                        if data.get("offline"):
-                            self._apply_offline_update(zone_idx)
-                        else:
-                            # Order matters: mode includes setpoint so check mode last
-                            if "temp" in data:
-                                self._apply_temp_update(zone_idx, data)
-                            if "setpoint" in data and "mode" not in data:
-                                self._apply_setpoint_update(zone_idx, data)
-                            if "mode" in data:
-                                self._apply_mode_update(zone_idx, data)
-                    except Exception as exc:
-                        self.logger.error(f"Error applying update for Zone {zone_idx}: {exc}")
-
-                # --- One-time zone name request ---
-                # Send RQ 0004 for all zones once we have MQTT + a known controller_id.
-                # Ensures zoneName states are populated immediately after startup rather
-                # than waiting for the controller to broadcast 0004 on its own schedule.
-                if not self._zone_names_requested and self.mqtt_connected and self.gateway_id:
-                    if self._request_zone_names():
-                        self._zone_names_requested = True
-
-                # --- Reconnect if MQTT dropped ---
-                # Guard: allow at least MQTT_RECONNECT_DELAY seconds since the last
-                # connect attempt before trying again.  This prevents the health check
-                # from tearing down a brand-new paho connection before on_connect fires
-                # (paho's async TCP handshake can take a second or two on a LAN).
-                if not self.mqtt_connected:
-                    secs_since_connect = time.time() - self._last_connect_time
-                    if secs_since_connect >= MQTT_RECONNECT_DELAY:
-                        self.logger.warning("MQTT not connected - attempting reconnect...")
-                        self._mqtt_connect()
-                        self.sleep(MQTT_RECONNECT_DELAY)
-                    else:
-                        # Still within the connect grace period - just keep polling
-                        self.sleep(MAIN_LOOP_SLEEP)
-                else:
+                try:
+                    self._main_loop_pass()
+                except self.StopThread:
+                    raise
+                except Exception as exc:
+                    self.logger.error(f"[MainLoop] Unhandled error this pass — continuing: {exc}")
                     self.sleep(MAIN_LOOP_SLEEP)
 
         except self.StopThread:
             pass
+
+    def _main_loop_pass(self):
+        """One pass of the main loop: drain the MQTT-callback queues, apply the updates,
+        run the watchdog, then sleep. Extracted from runConcurrentThread so the loop can
+        wrap it in a single try/except for per-pass failure isolation."""
+        # --- Drain pending updates from MQTT callbacks ---
+        with self.pending_lock:
+            updates    = dict(self.pending_updates)
+            self.pending_updates.clear()
+            zone_names = dict(self.pending_zone_names)
+            self.pending_zone_names.clear()
+            new_gw_id     = self.pending_gateway_id
+            self.pending_gateway_id = ""
+            gateway_alert = self.pending_gateway_alert
+            self.pending_gateway_alert = None
+
+        # Persist new gateway ID to prefs (must be done on main thread)
+        if new_gw_id:
+            self._persist_gateway_id(new_gw_id)
+
+        # Send gateway "restored" Pushover alert if queued
+        if gateway_alert:
+            self._send_gateway_alert(gateway_alert)
+
+        # Send delayed "offline" alert once GATEWAY_OFFLINE_DELAY has elapsed
+        with self.pending_lock:
+            offline_since      = self.gateway_offline_since
+            alert_already_sent = self.gateway_alert_sent
+        if offline_since is not None and not alert_already_sent:
+            if time.time() - offline_since >= GATEWAY_OFFLINE_DELAY:
+                self._send_gateway_alert("offline")
+                with self.pending_lock:
+                    self.gateway_alert_sent = True
+
+        # Power-cycle watchdog — recover a gateway that stays offline
+        self._watchdog_tick(offline_since)
+
+        # Apply zone name updates (store state + auto-rename device)
+        for zone_idx, name in zone_names.items():
+            try:
+                self._apply_zone_name_update(zone_idx, name)
+            except Exception as exc:
+                self.logger.error(f"Error applying name for Zone {zone_idx}: {exc}")
+
+        for zone_idx, data in updates.items():
+            try:
+                # Offline flag is set by _on_disconnect and takes priority.
+                if data.get("offline"):
+                    self._apply_offline_update(zone_idx)
+                else:
+                    # Apply setpoint/mode BEFORE temp so a same-tick temperature update's
+                    # hvacHeaterIsOn calc sees the new setpoint (no one-tick-stale indicator).
+                    # A 2349 (mode) carries the setpoint; a 2309 is setpoint-only — never both.
+                    if "mode" in data:
+                        self._apply_mode_update(zone_idx, data)
+                    elif "setpoint" in data:
+                        self._apply_setpoint_update(zone_idx, data)
+                    if "temp" in data:
+                        self._apply_temp_update(zone_idx, data)
+            except Exception as exc:
+                self.logger.error(f"Error applying update for Zone {zone_idx}: {exc}")
+
+        # --- One-time zone name request ---
+        # Send RQ 0004 for all zones once we have MQTT + a known controller_id.
+        # Ensures zoneName states are populated immediately after startup rather
+        # than waiting for the controller to broadcast 0004 on its own schedule.
+        if not self._zone_names_requested and self.mqtt_connected and self.gateway_id:
+            if self._request_zone_names():
+                self._zone_names_requested = True
+
+        # --- Reconnect if MQTT dropped ---
+        # Guard: allow at least MQTT_RECONNECT_DELAY seconds since the last
+        # connect attempt before trying again.  This prevents the health check
+        # from tearing down a brand-new paho connection before on_connect fires
+        # (paho's async TCP handshake can take a second or two on a LAN).
+        if not self.mqtt_connected:
+            secs_since_connect = time.time() - self._last_connect_time
+            if secs_since_connect >= MQTT_RECONNECT_DELAY:
+                self.logger.warning("MQTT not connected - attempting reconnect...")
+                self._mqtt_connect()
+                self.sleep(MQTT_RECONNECT_DELAY)
+            else:
+                # Still within the connect grace period - just keep polling
+                self.sleep(MAIN_LOOP_SLEEP)
+        else:
+            self.sleep(MAIN_LOOP_SLEEP)
 
     # --------------------------------------------------------------------------
     # Plugin Prefs
@@ -414,15 +459,14 @@ class Plugin(indigo.PluginBase):
         # try to extract the first valid segment automatically.
         raw_gw = values_dict.get("discovered_gateway_id", "").strip()
         if raw_gw:
-            if not re.match(r'^\d{2}:\d{6}$', raw_gw):
-                match = re.search(r'(\d{2}:\d{6})(?!\d)', raw_gw)
-                if match:
-                    values_dict["discovered_gateway_id"] = match.group(1)
-                else:
-                    errors_dict["discovered_gateway_id"] = (
-                        "Gateway ID must be in format NN:NNNNNN (e.g. 18:203052). "
-                        "Clear the field to let the plugin discover it automatically."
-                    )
+            clean = self._sanitise_gateway_id(raw_gw)
+            if clean:
+                values_dict["discovered_gateway_id"] = clean
+            else:
+                errors_dict["discovered_gateway_id"] = (
+                    "Gateway ID must be in format NN:NNNNNN (e.g. 18:203052). "
+                    "Clear the field to let the plugin discover it automatically."
+                )
         else:
             values_dict["discovered_gateway_id"] = ""
 
@@ -463,6 +507,7 @@ class Plugin(indigo.PluginBase):
 
         broker_changed  = (self.broker_host != old_host or self.broker_port != old_port)
         gateway_cleared = (not self.gateway_id and old_gw)
+        gateway_changed = (self.gateway_id and old_gw and self.gateway_id != old_gw)
 
         if broker_changed:
             self.logger.info("Broker settings changed - reconnecting MQTT")
@@ -472,6 +517,13 @@ class Plugin(indigo.PluginBase):
         if gateway_cleared:
             self.logger.info("Gateway ID cleared - will re-discover on next MQTT message")
             self.gateway_subscribed = False
+        elif gateway_changed and not broker_changed:
+            # Gateway ID was manually edited to a different value. The broker is unchanged
+            # (so _mqtt_connect was not called above to do it for us), so drop the stale rx
+            # subscription flag and resubscribe to the NEW gateway's rx topic directly.
+            self.logger.info(f"Gateway ID changed {old_gw} -> {self.gateway_id} - resubscribing")
+            self.gateway_subscribed = False
+            self._resubscribe_to_gateway()
 
     # --------------------------------------------------------------------------
     # Device Lifecycle
@@ -706,7 +758,7 @@ class Plugin(indigo.PluginBase):
 
         try:
             with self.mqtt_lock:
-                if self.mqtt_client is not None:
+                if self.mqtt_client is not None and self.mqtt_connected:
                     self.mqtt_client.publish(topic, payload, qos=0)
             self.logger.info(f"Zone update requested via {topic}: {msg_str}")
         except Exception as exc:
@@ -844,7 +896,7 @@ class Plugin(indigo.PluginBase):
 
             parts = topic.split("/")
             # RAMSES/GATEWAY/<gw_id>          -> 3 parts: presence/status topic (payload="online")
-            # RAMSES/GATEWAY/<gw_id>/info/...  -> 5 parts: firmware info sub-topics
+            # RAMSES/GATEWAY/<gw_id>/info/...  -> 5 parts: firmware info (NOT subscribed - never seen here)
             # RAMSES/GATEWAY/<gw_id>/rx        -> 4 parts: radio message stream
             if len(parts) == 3 and parts[0] == "RAMSES" and parts[1] == "GATEWAY":
                 self._handle_info_message(topic, payload, parts)
@@ -898,8 +950,20 @@ class Plugin(indigo.PluginBase):
                 return
 
             self.logger.info(f"Gateway discovered: {discovered_id}")
-            self.gateway_online = True
             self._set_gateway_id(discovered_id)
+
+            # Honour the retained presence payload on first discovery. A gateway that has
+            # died leaves a RETAINED 'offline' LWT on this topic; treating it as online would
+            # mean that after a plugin restart during an outage gateway_offline_since is never
+            # set and the power-cycle watchdog can never arm. So inspect the payload here too.
+            payload_lower = payload.strip().lower()
+            with self.pending_lock:
+                if payload_lower == "offline":
+                    self.gateway_online = False
+                    if self.gateway_offline_since is None and not self.gateway_alert_sent:
+                        self.gateway_offline_since = time.time()
+                else:
+                    self.gateway_online = True
 
         except Exception as exc:
             self.logger.error(f"Error in _handle_info_message: {exc}")
@@ -1081,6 +1145,8 @@ class Plugin(indigo.PluginBase):
                 break
 
             zone_idx = int(payload_hex[block_start : block_start + 2], 16)
+            if zone_idx >= MAX_ZONES:
+                continue   # domain code (0xF9/FA/FC etc.), not a real zone — never auto-create
             temp_c   = self._parse_temp_bytes(payload_hex, i * 3 + 1)
 
             if temp_c is None:
@@ -1110,6 +1176,8 @@ class Plugin(indigo.PluginBase):
                 break
 
             zone_idx   = int(payload_hex[block_start : block_start + 2], 16)
+            if zone_idx >= MAX_ZONES:
+                continue   # domain code (0xF9/FA/FC etc.), not a real zone — never auto-create
             setpoint_c = self._parse_temp_bytes(payload_hex, i * 3 + 1)
 
             if setpoint_c is None:
@@ -1139,11 +1207,10 @@ class Plugin(indigo.PluginBase):
         controller_id = self._extract_controller_id(fields)
 
         zone_idx   = int(payload_hex[0:2], 16)
+        if zone_idx >= MAX_ZONES:
+            return   # domain code (0xF9/FA/FC etc.), not a real zone — never auto-create
         setpoint_c = self._parse_temp_bytes(payload_hex, 1)
         mode_byte  = int(payload_hex[6:8], 16)    # byte 3 = hex chars 6-7
-
-        if setpoint_c is None:
-            setpoint_c = 0.0
 
         if mode_byte == ZONE_MODE_SCHEDULE:
             mode_str = "schedule"
@@ -1153,14 +1220,18 @@ class Plugin(indigo.PluginBase):
             mode_str = f"mode 0x{mode_byte:02X}"
 
         if self.debug:
+            sp_disp = f"{setpoint_c:.2f}" if setpoint_c is not None else "unknown"
             self.logger.debug(
-                f"2349: Zone {zone_idx} setpoint={setpoint_c:.2f}degC mode={mode_str}"
+                f"2349: Zone {zone_idx} setpoint={sp_disp}degC mode={mode_str}"
             )
 
         with self.pending_lock:
             if zone_idx not in self.pending_updates:
                 self.pending_updates[zone_idx] = {}
-            self.pending_updates[zone_idx]["setpoint"]      = setpoint_c
+            # Only carry setpoint when it is KNOWN. An unknown setpoint (raw 0x7FFF) must not
+            # clobber a valid setpointHeat with 0.0 — _apply_mode_update skips it when absent.
+            if setpoint_c is not None:
+                self.pending_updates[zone_idx]["setpoint"] = setpoint_c
             self.pending_updates[zone_idx]["mode"]          = mode_str
             self.pending_updates[zone_idx]["mode_byte"]     = mode_byte
             self.pending_updates[zone_idx]["controller_id"] = controller_id
@@ -1192,8 +1263,12 @@ class Plugin(indigo.PluginBase):
         try:
             zone_idx = int(payload_hex[0:2], 16)
 
-            # Name starts at byte 2 (hex offset 4), strip null bytes (padding)
+            # Name starts at byte 2 (hex offset 4), strip null bytes (padding).
+            # Trim a trailing half-byte so an odd-length payload still decodes its valid
+            # leading bytes instead of bytes.fromhex() raising and dropping the whole name.
             name_hex  = payload_hex[4:]
+            if len(name_hex) % 2:
+                name_hex = name_hex[:-1]
             raw_bytes = bytes.fromhex(name_hex)
             # Decode as UTF-8, strip null padding and whitespace
             name = raw_bytes.replace(b'\x00', b'').decode("utf-8", errors="replace").strip()
@@ -1364,46 +1439,51 @@ class Plugin(indigo.PluginBase):
             self.logger.error(f"Error updating Zone {zone_idx} setpoint state: {exc}")
 
     def _apply_mode_update(self, zone_idx, data):
-        """Update zoneMode and setpointHeat from 2349 (zone mode/override) message."""
+        """Update zoneMode (and setpointHeat when known) from a 2349 message.
+
+        A 2349 with an unknown setpoint (raw 0x7FFF) carries no 'setpoint' key, so only
+        zoneMode is updated and the last-known setpointHeat is left untouched."""
         dev = self._find_zone_device(zone_idx)
         if dev is None:
             dev = self._create_zone_device(zone_idx, data.get("controller_id", ""))
         if dev is None:
             return
 
-        setpoint_c    = data.get("setpoint", 0.0)
         mode_str      = data.get("mode", "schedule")
         controller_id = data.get("controller_id", "")
         ts            = self._format_ts(data.get("ts", ""))
 
         try:
             state_updates = [
-                {"key": "setpointHeat", "value": round(setpoint_c, 2),
-                 "uiValue": f"{setpoint_c:.2f} degC"},
-                {"key": "zoneMode",    "value": mode_str},
-                {"key": "lastSeen",    "value": ts},
-                {"key": "online",       "value": "true"},
+                {"key": "zoneMode",  "value": mode_str},
+                {"key": "lastSeen", "value": ts},
+                {"key": "online",    "value": "true"},
             ]
+            if "setpoint" in data:
+                setpoint_c = data["setpoint"]
+                state_updates.insert(0, {"key": "setpointHeat", "value": round(setpoint_c, 2),
+                                         "uiValue": f"{setpoint_c:.2f} degC"})
             if controller_id:
                 state_updates.append({"key": "zoneControllerId", "value": controller_id})
             dev.updateStatesOnServer(state_updates)
             if self.debug:
-                self.logger.debug(
-                    f"Zone {zone_idx} mode -> {mode_str} "
-                    f"setpoint -> {setpoint_c:.2f}degC"
-                )
+                self.logger.debug(f"Zone {zone_idx} mode -> {mode_str}")
         except Exception as exc:
             self.logger.error(f"Error updating Zone {zone_idx} mode state: {exc}")
 
     def _apply_offline_update(self, zone_idx):
-        """Mark a zone device as offline (called after MQTT disconnect)."""
+        """Mark a zone device offline after an MQTT disconnect.
+
+        Clears hvacHeaterIsOn so HomeKit (and other integrations) don't show a dead zone as
+        actively heating, and leaves lastSeen as the last REAL timestamp — the online=false
+        state already conveys the drop, so lastSeen is not overwritten with status text."""
         dev = self._find_zone_device(zone_idx)
         if dev is None:
             return
         try:
             dev.updateStatesOnServer([
-                {"key": "online",    "value": "false"},
-                {"key": "lastSeen", "value": "MQTT disconnected"},
+                {"key": "online",         "value": "false"},
+                {"key": "hvacHeaterIsOn", "value": False},
             ])
         except Exception as exc:
             self.logger.error(f"Error setting Zone {zone_idx} offline: {exc}")
@@ -1437,63 +1517,22 @@ class Plugin(indigo.PluginBase):
     def _watchdog_tick(self, offline_since):
         """Gateway power-cycle watchdog. Main thread only — called every main-loop pass.
 
-        ramses_esp firmware stops retrying WiFi after a failed reconnect (upstream
-        issue #27, unfixed as of 0.6.6c) so a stuck gateway can only be recovered
-        by cutting its power. If the gateway has been offline for longer than the
-        configured threshold, switch off the smart plug that feeds it, wait
-        wd_off_seconds, switch it back on. Repeat cycles are spaced a full
-        threshold apart and capped per day so a genuinely dead stick is not
-        bounced forever.
+        ramses_esp firmware stops retrying WiFi after a failed reconnect (upstream issue #27,
+        unfixed as of 0.6.6c) so a stuck gateway can only be recovered by cutting its power.
+        If the gateway has been offline longer than the configured threshold, power-cycle the
+        smart plug that feeds it. Repeat cycles are spaced a full threshold apart and capped
+        per day so a genuinely dead stick is not bounced forever.
+
+        The OFF/ON now happens inside ONE tick (see _power_cycle_plug), so the plug is never
+        left off across loop iterations — a reload or crash can no longer strand it powered
+        down. The decision logic lives in the pure _watchdog_decision() so it can be tested.
         """
-        if not self.wd_enabled or not self.wd_plug_id:
-            return
         now = time.time()
-
-        # Phase 2 of a cycle in progress: restore power after the off-time.
-        # On failure keep retrying each loop pass (plug must not stay off);
-        # after 5 failed attempts alert and give up the restore.
-        if self.wd_plug_off_at is not None:
-            if now - self.wd_plug_off_at < self.wd_off_seconds:
-                return
-            try:
-                indigo.device.turnOn(self.wd_plug_id)
-                self.logger.info("[Watchdog] Gateway plug back ON — gateway rebooting")
-                self.wd_plug_off_at = None
-                self.wd_on_retries  = 0
-            except Exception as exc:
-                self.wd_on_retries += 1
-                self.logger.error(
-                    f"[Watchdog] Failed to switch gateway plug back on "
-                    f"(attempt {self.wd_on_retries}/5): {exc}"
-                )
-                if self.wd_on_retries >= 5:
-                    self.wd_plug_off_at = None
-                    self.wd_on_retries  = 0
-                    self._send_watchdog_pushover(
-                        "RAMSES watchdog NEEDS HELP",
-                        "Could not switch the gateway plug back ON after a power "
-                        "cycle — the gateway may be without power. Check the plug.",
-                        priority="2",
-                    )
+        decision = self._watchdog_decision(now, offline_since)
+        if decision == "idle":
             return
 
-        if offline_since is None:
-            self.wd_gave_up_alerted = False   # gateway online — re-arm for next outage
-            return
-
-        offline_secs = now - offline_since
-        if offline_secs < self.wd_offline_minutes * 60:
-            return
-        # Space repeat cycles a full threshold apart (gives the gateway time to boot,
-        # join WiFi and publish its LWT before we judge the cycle a failure)
-        if now - self.wd_last_cycle_ts < self.wd_offline_minutes * 60:
-            return
-
-        today = time.strftime("%Y-%m-%d")
-        if self.wd_cycle_day != today:
-            self.wd_cycle_day    = today
-            self.wd_cycles_today = 0
-        if self.wd_cycles_today >= self.wd_max_cycles:
+        if decision == "giveup":
             if not self.wd_gave_up_alerted:
                 self.wd_gave_up_alerted = True
                 self.logger.warning(
@@ -1508,6 +1547,7 @@ class Plugin(indigo.PluginBase):
                 )
             return
 
+        # decision == "cycle"
         if self.wd_plug_id not in indigo.devices:
             self.logger.error(
                 f"[Watchdog] Configured plug device {self.wd_plug_id} not found — "
@@ -1515,15 +1555,11 @@ class Plugin(indigo.PluginBase):
             )
             return
 
-        try:
-            indigo.device.turnOff(self.wd_plug_id)
-        except Exception as exc:
-            self.logger.error(f"[Watchdog] Failed to switch gateway plug off: {exc}")
-            return
-        self.wd_plug_off_at   = now
+        offline_secs = now - offline_since
+        mins = int(offline_secs // 60)
         self.wd_last_cycle_ts = now
         self.wd_cycles_today += 1
-        mins = int(offline_secs // 60)
+        self._persist_watchdog_state()
         self.logger.warning(
             f"[Watchdog] Gateway offline {mins}m — power-cycling its plug "
             f"(off {self.wd_off_seconds}s, cycle #{self.wd_cycles_today} of "
@@ -1534,6 +1570,84 @@ class Plugin(indigo.PluginBase):
             f"Gateway offline {mins}m — plug cycled "
             f"(#{self.wd_cycles_today} of {self.wd_max_cycles} today).",
         )
+        self._power_cycle_plug()
+
+    def _watchdog_decision(self, now, offline_since):
+        """Pure decision for the watchdog — returns 'idle' | 'cycle' | 'giveup'.
+
+        Performs NO Indigo IO so it is unit-testable in isolation. It may roll the daily
+        counter over to a new day and clears the give-up flag when the gateway is back online.
+        """
+        if not self.wd_enabled or not self.wd_plug_id:
+            return "idle"
+        if offline_since is None:
+            self.wd_gave_up_alerted = False   # gateway online — re-arm for next outage
+            return "idle"
+
+        offline_secs = now - offline_since
+        if offline_secs < self.wd_offline_minutes * 60:
+            return "idle"
+        # Space repeat cycles a full threshold apart (gives the gateway time to boot,
+        # join WiFi and publish its LWT before we judge the cycle a failure).
+        if now - self.wd_last_cycle_ts < self.wd_offline_minutes * 60:
+            return "idle"
+
+        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        if self.wd_cycle_day != today:
+            self.wd_cycle_day    = today
+            self.wd_cycles_today = 0
+        if self.wd_cycles_today >= self.wd_max_cycles:
+            return "giveup"
+        return "cycle"
+
+    def _power_cycle_plug(self):
+        """Switch the gateway plug OFF, wait wd_off_seconds, then back ON — all within this one
+        tick. A try/finally guarantees the plug is switched back ON even if self.sleep() raises
+        StopThread (plugin shutting down mid-cycle), so the gateway is never stranded without
+        power. Main thread only.
+        """
+        try:
+            indigo.device.turnOff(self.wd_plug_id)
+            self.logger.info(f"[Watchdog] Gateway plug OFF for {self.wd_off_seconds}s")
+        except Exception as exc:
+            self.logger.error(f"[Watchdog] Failed to switch gateway plug off: {exc}")
+            return
+        try:
+            self.sleep(self.wd_off_seconds)
+        finally:
+            # ALWAYS restore power, even if StopThread was raised during the sleep above.
+            restored = False
+            for attempt in range(1, 6):
+                try:
+                    indigo.device.turnOn(self.wd_plug_id)
+                    self.logger.info("[Watchdog] Gateway plug back ON — gateway rebooting")
+                    restored = True
+                    break
+                except Exception as exc:
+                    self.logger.error(
+                        f"[Watchdog] Failed to switch gateway plug back on "
+                        f"(attempt {attempt}/5): {exc}"
+                    )
+            if not restored:
+                self._send_watchdog_pushover(
+                    "RAMSES watchdog NEEDS HELP",
+                    "Could not switch the gateway plug back ON after a power cycle — the "
+                    "gateway may be without power. Check the plug.",
+                    priority="1",
+                )
+
+    def _persist_watchdog_state(self):
+        """Persist the daily cycle counters so a graceful reload during an outage doesn't reset
+        the per-day cap (and re-cycle the plug) or lose the cycle-spacing timer. (Indigo only
+        flushes pluginPrefs on a clean shutdown, so this covers reloads, not hard crashes.)"""
+        try:
+            prefs = self.pluginPrefs
+            prefs["wd_cycle_day"]     = self.wd_cycle_day
+            prefs["wd_cycles_today"]  = str(self.wd_cycles_today)
+            prefs["wd_last_cycle_ts"] = str(self.wd_last_cycle_ts)
+            self.pluginPrefs = prefs
+        except Exception as exc:
+            self.logger.debug(f"[Watchdog] Could not persist watchdog state: {exc}")
 
     def _send_watchdog_pushover(self, title, message, priority="0"):
         """Pushover for watchdog events. Main thread only."""
@@ -1608,6 +1722,18 @@ class Plugin(indigo.PluginBase):
         """Return the MQTT topic for sending commands to the RAMSES-ESP gateway."""
         return f"{RAMSES_ROOT}/{self.gateway_id}/tx"
 
+    @staticmethod
+    def _encode_2349_setpoint(zone_idx, setpoint_c):
+        """Encode the 7-byte W 2349 permanent-override payload as a hex string.
+
+        Layout: ZZ (zone) XXXX (setpoint*100, big-endian 16-bit) MM (mode 0x02) FFFFFF (no
+        expiry). E.g. zone 1 @ 21.5 degC -> "01" + "0866" + "02" + "FFFFFF" = "01086602FFFFFF".
+        Pure + static so it can be unit-tested without a live gateway.
+        """
+        raw_setpoint = int(round(setpoint_c * TEMP_SCALE))
+        raw_setpoint = max(0, min(raw_setpoint, TEMP_UNKNOWN_RAW - 1))
+        return f"{zone_idx:02X}{raw_setpoint:04X}{ZONE_MODE_PERMANENT:02X}FFFFFF"
+
     def _publish_setpoint(self, zone_idx, setpoint_c):
         """
         Publish a W 2349 permanent-override command to the gateway tx topic.
@@ -1646,12 +1772,8 @@ class Plugin(indigo.PluginBase):
                 )
                 return False
 
-            # Encode setpoint: multiply by 100, clamp within valid RAMSES range
-            raw_setpoint = int(round(setpoint_c * TEMP_SCALE))
-            raw_setpoint = max(0, min(raw_setpoint, TEMP_UNKNOWN_RAW - 1))
-
-            # W 2349 permanent override: zone + setpoint + mode(0x02) + FFFFFF (no expiry)
-            payload_hex = f"{zone_idx:02X}{raw_setpoint:04X}{ZONE_MODE_PERMANENT:02X}FFFFFF"
+            # Encode the W 2349 permanent-override payload (zone + setpoint + mode + no expiry)
+            payload_hex = self._encode_2349_setpoint(zone_idx, setpoint_c)
 
             # Normalise gateway address format (wiki shows 18:730, but device may use 18-730)
             gw_addr = self.gateway_id.replace("-", ":")
@@ -1737,6 +1859,23 @@ class Plugin(indigo.PluginBase):
         new_folder = indigo.devices.folder.create(folder_name)
         return new_folder.id
 
+    @staticmethod
+    def _sanitise_gateway_id(raw):
+        """Return the first valid RAMSES gateway address (NN:NNNNNN) found in raw, or "".
+
+        Handles the corruption where the id was typed several times with no separator, e.g.
+        "18:20305218:203052" -> "18:203052" (the (?!\\d) keeps the segment NOT followed by a
+        digit; ':' isn't a word char so \\b can't be used). Shared by _read_prefs and
+        validatePrefsConfigUi so the two can never drift apart.
+        """
+        if not raw:
+            return ""
+        raw = raw.strip()
+        if re.match(r'^\d{2}:\d{6}$', raw):
+            return raw
+        match = re.search(r'(\d{2}:\d{6})(?!\d)', raw)
+        return match.group(1) if match else ""
+
     def _format_ts(self, ts_raw):
         """Convert an ISO 8601 gateway timestamp to a clean local datetime string.
 
@@ -1798,6 +1937,16 @@ class Plugin(indigo.PluginBase):
         self.wd_offline_minutes = _as_int("watchdog_offline_minutes", 15, 5, 1440)
         self.wd_off_seconds     = _as_int("watchdog_off_seconds",     10, 3, 120)
         self.wd_max_cycles      = _as_int("watchdog_max_cycles",       3, 1, 20)
+        # Restore the persisted daily cycle counters so a reload mid-outage can't reset the cap.
+        self.wd_cycle_day = str(prefs.get("wd_cycle_day", "")).strip()
+        try:
+            self.wd_cycles_today = int(str(prefs.get("wd_cycles_today", "0")).strip() or 0)
+        except (ValueError, TypeError):
+            self.wd_cycles_today = 0
+        try:
+            self.wd_last_cycle_ts = float(str(prefs.get("wd_last_cycle_ts", "0")).strip() or 0)
+        except (ValueError, TypeError):
+            self.wd_last_cycle_ts = 0.0
         if self.wd_enabled and not self.wd_plug_id:
             self.logger.warning(
                 "Power-cycle watchdog is enabled but no plug device is selected — "
@@ -1811,19 +1960,11 @@ class Plugin(indigo.PluginBase):
                 "Plugin cannot connect to the gateway until this is set."
             )
 
-        # Extract gateway ID: use regex to find the first valid RAMSES device address
-        # (format NN:NNNNNN, e.g. "18:203052"). This handles corruption where the user
-        # typed the ID multiple times so Indigo stored "18:20305218:20305218:..." with
-        # no whitespace — simple strip() cannot fix that, but regex can.
+        # Extract gateway ID. The shared sanitiser handles corruption where the id was typed
+        # multiple times so Indigo stored "18:20305218:20305218:..." with no whitespace.
         raw_gw_id = prefs.get("discovered_gateway_id", "")
-        # Pattern: exactly 2 digits, colon, exactly 6 digits, NOT followed by another digit.
-        # \b doesn't work here because ':' is not a word character, so we use (?!\d) instead.
-        # e.g. "18:20305218:203052" -> matches "18:203052" (the one NOT followed by a digit)
-        match = re.search(r'(\d{2}:\d{6})(?!\d)', raw_gw_id)
-        if match:
-            self.gateway_id = match.group(1)
-        else:
-            self.gateway_id = raw_gw_id.strip()   # empty string or already valid
+        clean = self._sanitise_gateway_id(raw_gw_id)
+        self.gateway_id = clean if clean else raw_gw_id.strip()   # empty or already valid
 
         # If the stored value was corrupted, rewrite it with the clean version
         if self.gateway_id != raw_gw_id:
@@ -1853,7 +1994,11 @@ class Plugin(indigo.PluginBase):
 
     def menuToggleTimestamps(self):
         self.timestamp_enabled = not self.timestamp_enabled
-        self.pluginPrefs["timestampEnabled"] = self.timestamp_enabled
+        # Use the reassignment pattern (not bare item-assignment) so the value is staged in
+        # the prefs dict Indigo flushes on shutdown.
+        prefs = self.pluginPrefs
+        prefs["timestampEnabled"] = self.timestamp_enabled
+        self.pluginPrefs = prefs
         if self._ts_filter:
             self._ts_filter.enabled = self.timestamp_enabled
         state = "ON" if self.timestamp_enabled else "OFF"
