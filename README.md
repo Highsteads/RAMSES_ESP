@@ -6,7 +6,7 @@ An [Indigo Domotics](https://www.indigodomo.com/) plugin for the **RAMSES-ESP** 
 
 The RAMSES-ESP is an ESP32-S3 + CC1101 RF USB dongle that bridges the Honeywell Evohome 868 MHz radio network to MQTT. This plugin connects to that MQTT stream and creates native Indigo thermostat devices for each Evohome zone — giving you live temperatures, setpoint control, and zone mode tracking entirely locally.
 
-**Why local?** The Honeywell EU cloud has proven unreliable. This plugin bypasses the cloud completely — if your RAMSES-ESP gateway can hear the TRVs, the plugin works.
+**Why local?** The Honeywell EU cloud has let us down often enough to stop trusting it. This plugin skips the cloud altogether — if your RAMSES-ESP gateway can hear the TRVs, the plugin works.
 
 ## Features
 
@@ -17,10 +17,10 @@ The RAMSES-ESP is an ESP32-S3 + CC1101 RF USB dongle that bridges the Honeywell 
 - **Zone modes** — Tracks schedule vs permanent override (from 2349 messages)
 - **Zone names** — Auto-renames devices from Evohome controller (opcode 0004)
 - **RAMSES folder** — All zone devices created inside a dedicated Indigo device folder
-- **Robust MQTT** — Auto-reconnects on broker restart; all devices go offline cleanly on disconnect
+- **Robust MQTT** — Reconnects on its own when the broker restarts, and every device goes offline cleanly when the link drops
 - **Power-cycle watchdog** — If the gateway stays offline, the plugin can cycle the smart plug that powers it (the ramses_esp firmware stops retrying WiFi after a failed reconnect, so only a power cycle recovers it)
-- **No cloud** — Fully local via MQTT; works when Honeywell EU servers are down
-- **Bundled paho** — paho-mqtt 1.6.1 included; no separate installation needed
+- **No cloud** — Wholly local over MQTT, so it keeps working when the Honeywell EU servers are down
+- **Bundled paho** — paho-mqtt 1.6.1 ships with the plugin, so there is nothing else to install
 
 ## Requirements
 
@@ -52,6 +52,7 @@ dialog — `IndigoSecrets.py` wins over the dialog when both are set.
 If a required value is set in NEITHER source the plugin logs an ERROR
 pointing the user to either fill in the matching field or add the key to
 `IndigoSecrets.py`.
+
 ## Installation
 
 1. Go to the [Releases page](https://github.com/Highsteads/RAMSES_ESP/releases) and download `RAMSES_ESP.indigoPlugin.zip`
@@ -175,10 +176,10 @@ restarts. Defaults to ON.
 
 ## Known Limitations
 
-- **RAMSES-III not supported** — New Honeywell firmware (post-2025) uses a different protocol; the ramses_rf library also does not support it
-- **SNTP on gateway** — The RAMSES-ESP firmware accepts the `sntp server` command but does not persist it to NVS (firmware limitation); timestamps may show as 1970 epoch until this is fixed upstream — the plugin handles this gracefully by using local system time
+- **RAMSES-III not supported** — Honeywell's post-2025 firmware speaks a different protocol, which the ramses_rf library does not handle either
+- **SNTP on gateway** — The RAMSES-ESP firmware accepts the `sntp server` command but never writes it to NVS, so timestamps can read as 1970 until the firmware fixes it. The plugin works around this by using local system time
 - **Local Override mode** — If a TRV dial is turned manually, the TRV enters local override and ignores remote setpoint commands until returned to AUTO position
-- **Heat-only** — Plugin supports heat zones only; DHW and cooling not implemented
+- **Heat only** — The plugin handles heat zones. It does not do hot water or cooling
 
 ## Related Projects
 
