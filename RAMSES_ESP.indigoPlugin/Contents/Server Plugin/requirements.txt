@@ -1,1 +1,15 @@
-paho-mqtt==1.6.1
+# RAMSES ESP runtime dependencies.
+# Indigo pip-installs this into Contents/Packages/ at plugin startup.
+#
+# paho 2.x since v1.5.0: plugin.py passes CallbackAPIVersion.VERSION2 to
+# mqtt.Client() and the connect/disconnect callbacks use the VERSION2
+# signatures (reason_code / disconnect_flags / properties). Do NOT downgrade
+# to 1.x without reverting those — 1.x would choke on the extra positional.
+#
+# CHANGING THIS PIN NEEDS THE PACKAGES DIR PURGED, not just the sentinel:
+# `pip install -t` does not uninstall the old version, so both dist-infos end
+# up present and the mixed directory can load the OLD code. Do
+#   rm -rf Contents/Packages/paho*
+#   rm -f  Contents/Packages/3.13-pip-install-log-success.txt
+# then restart. Zigbee2MQTTBridge hit exactly this on the same migration.
+paho-mqtt==2.1.0

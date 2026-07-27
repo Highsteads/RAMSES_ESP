@@ -20,7 +20,7 @@ The RAMSES-ESP is an ESP32-S3 + CC1101 RF USB dongle that bridges the Honeywell 
 - **Robust MQTT** — Reconnects on its own when the broker restarts, and every device goes offline cleanly when the link drops
 - **Power-cycle watchdog** — If the gateway stays offline, the plugin can cycle the smart plug that powers it (the ramses_esp firmware stops retrying WiFi after a failed reconnect, so only a power cycle recovers it)
 - **No cloud** — Wholly local over MQTT, so it keeps working when the Honeywell EU servers are down
-- **Bundled paho** — paho-mqtt 1.6.1 ships with the plugin, so there is nothing else to install
+- **Bundled paho** — paho-mqtt 2.1.0 ships with the plugin, so there is nothing else to install
 
 ## Requirements
 
@@ -152,6 +152,7 @@ survives a restart. It defaults to ON.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.5.0 | 27-Jul-2026 | Moved to paho-mqtt 2.1.0, the current release of the MQTT library. Version 2 requires the callback API version to be stated when the client is built and changes the shape of the connect and disconnect callbacks, so all three moved together — leave any one of them behind and the gateway simply never connects, which on this plugin means twelve heating zones quietly stop updating. Connection failures now report the broker's own wording ("Not authorized") instead of a number looked up in a table that version 2 had made unreachable. Fifteen new tests cover the change. If you are upgrading by hand rather than through the release, delete `Contents/Packages/paho*` first: pip leaves the old copy in place alongside the new one, and the mixture can load the wrong code. |
 | 1.4.1 | 21-Jul-2026 | Housekeeping. Named log levels now map to the real logging levels — warnings and errors raised through the shared helper had been appearing as plain info lines, so amber and red entries people relied on for diagnosis never showed. Shared-utility refresh: calling the log timestamp filter twice no longer double-stamps every line, and the module imports cleanly outside Indigo. |
 | 1.4.0 | 26-Jun-2026 | A thorough multi-agent code review and the plugin's first proper test suite (34 tests covering the protocol decoders, the setpoint encoder, the gateway-id sanitiser and the watchdog). The headline fix is the power-cycle watchdog, which now does its off-and-on inside a single tick with a guaranteed restore, so a plugin reload or a crash mid-cycle can no longer leave the gateway switched off and the heating dead. A gateway that was already offline when the plugin restarts is now correctly seen as offline rather than being read as online, which used to quietly stop the watchdog ever arming. Alongside that, stray RAMSES domain codes no longer create phantom zone devices, an unknown setpoint no longer wipes a good one to zero, a zone marked offline no longer shows as actively heating in HomeKit, and the setpoint floor moved from 5 to 8 degC to match what the Evohome controller actually applies. Plenty of smaller tidying came along for the ride. |
 | 1.3.0 | 12-Jun-2026 | Gateway power-cycle watchdog. If the gateway stays offline beyond a configurable threshold (default 15 minutes), the plugin switches off the Indigo smart plug that powers it, waits a few seconds, and switches it back on. Repeat cycles are spaced a full threshold apart and capped per day (default 3), with Pushover notes on every cycle and a final "needs a human" alert when the cap is reached. Configure it under Plugins -> RAMSES ESP -> Configure. Born of a real incident: a WiFi config change knocked the gateway off the network and the firmware never tried to rejoin (upstream ramses_esp issue #27), so heating data was silently absent for ten days. Also guarded the broker-port preference against non-numeric values. |
@@ -192,7 +193,7 @@ survives a restart. It defaults to ON.
 ## Acknowledgements
 
 - Protocol details from the [ramses_rf](https://github.com/zxdavb/ramses_rf) project
-- paho-mqtt 1.6.1 bundled from the Eclipse Paho project (EPL-2.0 / EDL-1.0)
+- paho-mqtt 2.1.0 bundled from the Eclipse Paho project (EPL-2.0 / EDL-1.0)
 
 ## Authors & licence
 

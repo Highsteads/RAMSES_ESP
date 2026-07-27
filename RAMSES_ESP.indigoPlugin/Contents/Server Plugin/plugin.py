@@ -5,9 +5,35 @@
 #              Connects to RAMSES-ESP wireless HVAC gateway via MQTT, auto-discovers
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
-# Author:      CliveS & Claude Opus 4.8
-# Date:        21-07-2026
-# Version:     1.4.1
+# Author:      CliveS & Claude Opus 5
+# Date:        27-07-2026
+# Version:     1.5.0
+#
+# v1.5.0 (27-07-2026): paho-mqtt 1.6.1 -> 2.1.0. Pinned and deferred since
+# 26-06-2026; Zigbee2MQTTBridge made the same move on 16-07-2026 (v2.0.0), so
+# this follows that recipe rather than rediscovering it.
+# * mqtt.Client() now takes CallbackAPIVersion.VERSION2 as a REQUIRED first
+#   positional. Omit it and 2.x raises, so the gateway silently never connects
+#   — which on this plugin means 12 heating zones quietly stop updating.
+# * VERSION2 changes the callback signatures, so all three had to move, not
+#   just the constructor: _on_connect gains reason_code + properties,
+#   _on_disconnect gains disconnect_flags before them. reason_code is a
+#   ReasonCode object (.is_failure, readable str()), normalised to an int at
+#   the _on_disconnect boundary so the clean-vs-unexpected test keeps its
+#   meaning. An unconvertible code counts as unexpected — that reconnects,
+#   rather than assuming a tidy shutdown.
+# * The 1-5 connect-refusal label table is deleted. Under VERSION2 even a
+#   3.1.1 broker's CONNACK errors arrive as MQTT-v5 reason codes, so it could
+#   never have matched again; str(ReasonCode) is already readable.
+# * DEPLOY TRAP, documented in requirements.txt: changing a pinned VERSION
+#   needs Contents/Packages/paho* PURGED, not just the pip sentinel deleted.
+#   `pip install -t` does not uninstall, so both dist-infos end up present and
+#   the mixed directory can load the OLD code — which has no CallbackAPIVersion.
+#   Z2M hit exactly this and the bridge came up dead.
+# * Tests 34 -> 48: the conftest paho stub gained a real CallbackAPIVersion
+#   enum and a paho-free FakeReasonCode (a bare module stub would have raised
+#   AttributeError and hidden the very mistake these tests exist to catch).
+#   10 of the 14 new cases fail against the pre-migration code.
 #
 # v1.4.1 (21-07-2026): shared plugin_utils.py refreshed to v1.3 — the
 # estate-wide propagation of the four Appliance Monitor deep-review fixes.
@@ -798,8 +824,13 @@ class Plugin(indigo.PluginBase):
 
             client_id = f"indigo-ramses-esp-{int(time.time())}"
 
-            # paho 1.6.1 (bundled) does not have CallbackAPIVersion
+            # paho 2.x (v1.5.0): callback_api_version is a REQUIRED first
+            # positional — omit it and 2.x raises, so the gateway never connects.
+            # VERSION2 also changes the connect/disconnect callback signatures;
+            # see _on_connect / _on_disconnect below. clean_session stays valid
+            # because the default protocol is still MQTTv311.
             client = mqtt.Client(
+                mqtt.CallbackAPIVersion.VERSION2,
                 client_id=client_id,
                 clean_session=True,
                 userdata=None
@@ -848,9 +879,14 @@ class Plugin(indigo.PluginBase):
     # MQTT Callbacks (run on paho's background thread - NO Indigo API calls here)
     # --------------------------------------------------------------------------
 
-    def _on_connect(self, client, userdata, flags, rc):
-        """Called by paho when connection is established or fails."""
-        if rc == 0:
+    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
+        """Called by paho when connection is established or fails.
+
+        paho 2.x VERSION2 signature: `reason_code` is a ReasonCode object with
+        .is_failure and a readable str(), `properties` is None on MQTT 3.1.1, and
+        `flags` is a ConnectFlags dataclass (unused here).
+        """
+        if not reason_code.is_failure:
             self.mqtt_connected = True
             self.logger.info(
                 f"MQTT connected to {self.broker_host}:{self.broker_port}"
@@ -867,23 +903,29 @@ class Plugin(indigo.PluginBase):
                 self.logger.info(f"Subscribed to {rx_topic}")
         else:
             self.mqtt_connected = False
-            rc_messages = {
-                1: "incorrect protocol version",
-                2: "invalid client identifier",
-                3: "server unavailable",
-                4: "bad username or password",
-                5: "not authorised"
-            }
-            reason = rc_messages.get(rc, f"code {rc}")
-            self.logger.error(f"MQTT connection refused: {reason}")
+            # str(ReasonCode) is already readable ("Not authorized", "Bad user
+            # name or password", ...). Under VERSION2 even a 3.1.1 broker's
+            # CONNACK errors arrive as MQTT-v5 reason codes, so the old 1-5 int
+            # label table could never have matched again — deleted in v1.5.0.
+            self.logger.error(f"MQTT connection refused: {reason_code}")
 
-    def _on_disconnect(self, client, userdata, rc):
-        """Called by paho when disconnected."""
+    def _on_disconnect(self, client, userdata, disconnect_flags,
+                       reason_code, properties=None):
+        """Called by paho when disconnected. paho 2.x VERSION2 signature."""
         self.mqtt_connected = False
         self.gateway_subscribed = False
-        if rc != 0:
+        # Normalise the ReasonCode to an int at the boundary so the clean-vs-
+        # unexpected test keeps its old meaning (0 = clean). A ReasonCode that
+        # will not convert is treated as unexpected, which is the safe way round:
+        # it reconnects rather than assuming a tidy shutdown.
+        try:
+            rc_val = int(reason_code.value)
+        except (AttributeError, TypeError, ValueError):
+            rc_val = 0 if reason_code in (0, None) else 1
+        if rc_val != 0:
             self.logger.warning(
-                f"MQTT unexpected disconnect (rc={rc}) - will reconnect in {MQTT_RECONNECT_DELAY}s"
+                f"MQTT unexpected disconnect ({reason_code}) - will reconnect "
+                f"in {MQTT_RECONNECT_DELAY}s"
             )
         else:
             self.logger.info("MQTT disconnected cleanly")
