@@ -16,6 +16,14 @@ __pycache__/
 # Distribution
 RAMSES_ESP.indigoPlugin.zip
 
+# Vendored dependencies — Indigo pip-installs these into the bundle at startup
+# from requirements.txt, so they must NEVER be committed. Tracking them shipped
+# a v1.5.0 zip carrying paho 1.6.1 AND a pip-success sentinel, so Indigo skipped
+# the install and the plugin loaded 1.x code against a 2.x call — dead at
+# startup. NOT root-anchored: a leading-slash pattern would not match inside
+# the .indigoPlugin bundle (the ClaudeBridge lesson).
+**/Contents/Packages/
+
 # Claude Code context file — local only
 CLAUDE.md
 
