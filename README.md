@@ -26,6 +26,7 @@ The RAMSES-ESP is an ESP32-S3 + CC1101 RF USB dongle that bridges the Honeywell 
 
 | Requirement | Details |
 |-------------|---------|
+| 1.5.1 | 08-Aug-2026 | **Added the missing support link.** Every Indigo plugin is meant to carry a web address inside its bundle — it is what the "About" item in the Plugins menu opens. This one had the entry but left it blank, so that menu item went nowhere. It now points at this repository. Nothing else changed. |
 | Indigo | 2025.2 or later (API v3.4+) |
 | Python | 3.13 (bundled with Indigo 2025.2) |
 | Hardware | [RAMSES-ESP](https://github.com/IndaloTech/ramses_esp) USB gateway |

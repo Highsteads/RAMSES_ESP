@@ -10,13 +10,13 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>RAMSES ESP Plugin</string>
+			<string>https://github.com/Highsteads/RAMSES_ESP</string>
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1.0.0</string>
 	<key>PluginVersion</key>
-	<string>1.5.0</string>
+	<string>1.5.1</string>
 	<key>ServerApiVersion</key>
 	<string>3.4</string>
 </dict>

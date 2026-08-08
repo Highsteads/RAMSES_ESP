@@ -7,7 +7,15 @@
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5
 # Date:        27-07-2026
-# Version:     1.5.0
+# Version:     1.5.1
+#
+# v1.5.1 (08-08-2026): REQUIRED Info.plist KEY. `CFBundleURLTypes` was PRESENT but
+# EMPTY, so the plugin shipped without the support URL that becomes its
+# "About" menu item — one of the SIX keys the official Developer's Guide lists as
+# required. An empty array satisfies "key exists" while giving users nowhere to go,
+# which is why an earlier sweep that only looked for a MISSING key passed it. Found
+# by an estate check auditing the VALUE rather than the key's presence.
+# No plugin logic changed.
 #
 # v1.5.0 (27-07-2026): paho-mqtt 1.6.1 -> 2.1.0. Pinned and deferred since
 # 26-06-2026; Zigbee2MQTTBridge made the same move on 16-07-2026 (v2.0.0), so
