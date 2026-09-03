@@ -1,5 +1,7 @@
 # RAMSES ESP — Indigo Plugin
 
+**Version:** 1.5.1 | **Author:** CliveS & Claude | **Platform:** Indigo 2025.2 or later
+
 An [Indigo Domotics](https://www.indigodomo.com/) plugin for the **RAMSES-ESP** USB gateway, providing local radio control of **Honeywell Evohome** heating systems via the RAMSES-II protocol — no cloud dependency.
 
 ## Overview
