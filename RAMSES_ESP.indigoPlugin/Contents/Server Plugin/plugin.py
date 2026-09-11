@@ -5,9 +5,13 @@
 #              Connects to RAMSES-ESP wireless HVAC gateway via MQTT, auto-discovers
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
-# Author:      CliveS & Claude Opus 5
-# Date:        27-07-2026
-# Version:     1.5.1
+# Author:      CliveS & Claude Fable 5.1
+# Date:        11-09-2026
+# Version:     1.5.2
+#
+# v1.5.2 (11-09-2026): GITHUBINFO. The bundle now carries the standard GitHub record
+# (GithubInfo: GithubUser/GithubRepo), as the Indigo Domotics and community plugins do.
+# No behaviour change.
 #
 # v1.5.1 (08-08-2026): REQUIRED Info.plist KEY. `CFBundleURLTypes` was PRESENT but
 # EMPTY, so the plugin shipped without the support URL that becomes its

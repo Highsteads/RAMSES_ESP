@@ -1,6 +1,6 @@
 # RAMSES ESP — Indigo Plugin
 
-**Version:** 1.5.1 | **Author:** CliveS & Claude | **Platform:** Indigo 2025.2 or later
+**Version:** 1.5.2 | **Author:** CliveS & Claude | **Platform:** Indigo 2025.2 or later
 
 An [Indigo Domotics](https://www.indigodomo.com/) plugin for the **RAMSES-ESP** USB gateway, providing local radio control of **Honeywell Evohome** heating systems via the RAMSES-II protocol — no cloud dependency.
 
@@ -154,6 +154,7 @@ survives a restart. It defaults to ON.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.5.2 | 11-Sep-2026 | **The bundle now carries the standard GitHub record.** Indigo plugins can carry a small note inside the bundle saying where their source lives on GitHub, spelt the way the Indigo Domotics and community plugins spell it. This one now has it, pointing at this repository. Nothing else changed. |
 | 1.5.1 | 08-Aug-2026 | **Added the missing support link.** Every Indigo plugin is meant to carry a web address inside its bundle — it is what the "About" item in the Plugins menu opens. This one had the entry but left it blank, so that menu item went nowhere. It now points at this repository. Nothing else changed. |
 | 1.5.0 | 27-Jul-2026 | Moved to paho-mqtt 2.1.0, the current release of the MQTT library. Version 2 requires the callback API version to be stated when the client is built and changes the shape of the connect and disconnect callbacks, so all three moved together — leave any one of them behind and the gateway simply never connects, which on this plugin means twelve heating zones quietly stop updating. Connection failures now report the broker's own wording ("Not authorized") instead of a number looked up in a table that version 2 had made unreachable. Fourteen new tests cover the change, taking the suite to 48. If you are upgrading by hand rather than through the release, delete `Contents/Packages/paho*` first: pip leaves the old copy in place alongside the new one, and the mixture can load the wrong code. |
 | 1.4.1 | 21-Jul-2026 | Housekeeping — a refresh of the shared utility module, with no change to how the plugin behaves. Calling the log timestamp filter twice no longer double-stamps every line, a log call with a mismatched placeholder now shows its arguments instead of dropping them, and the module imports cleanly outside Indigo. |

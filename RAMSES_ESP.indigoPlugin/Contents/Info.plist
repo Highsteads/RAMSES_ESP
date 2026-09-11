@@ -15,8 +15,15 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1.0.0</string>
+	<key>GithubInfo</key>
+	<dict>
+		<key>GithubRepo</key>
+		<string>RAMSES_ESP</string>
+		<key>GithubUser</key>
+		<string>Highsteads</string>
+	</dict>
 	<key>PluginVersion</key>
-	<string>1.5.1</string>
+	<string>1.5.2</string>
 	<key>ServerApiVersion</key>
 	<string>3.4</string>
 </dict>
