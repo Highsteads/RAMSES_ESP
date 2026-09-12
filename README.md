@@ -1,6 +1,6 @@
 # RAMSES ESP — Indigo Plugin
 
-**Version:** 1.5.2 | **Author:** CliveS & Claude | **Platform:** Indigo 2025.2 or later
+**Version:** 1.6.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2025.2 or later
 
 An [Indigo Domotics](https://www.indigodomo.com/) plugin for the **RAMSES-ESP** USB gateway, providing local radio control of **Honeywell Evohome** heating systems via the RAMSES-II protocol — no cloud dependency.
 
@@ -106,7 +106,14 @@ Each zone device exposes these states:
 | `zoneControllerId` | String | Evohome controller address e.g. `01:091567` |
 | `zoneName` | String | Zone name from Evohome controller |
 | `lastSeen` | String | Timestamp of most recent message |
-| `online` | String | `true` / `false` (MQTT connectivity) |
+| `online` | String | `true` / `false` — the GATEWAY's MQTT link, not the valve |
+| `trvBattery` | Integer | Lowest battery % of the valves in this zone; `-1` until one reports |
+| `trvBatteryWarn` | List | `unknown` / `ok` / `low` — a valve warning about its own battery |
+| `trvStatus` | List | `unknown` / `answering` / `silent` — whether the valves are still answering |
+| `trvLastSeen` | String | When a valve in this zone was last heard |
+| `trvCount` | Integer | How many valves have been heard in this zone |
+| `trvIds` | String | Their RAMSES addresses |
+| `trvSummary` | String | One plain-English sentence about the valves |
 
 ## Controlling Setpoints
 
@@ -154,6 +161,7 @@ survives a restart. It defaults to ON.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.6.0 | 12-Sep-2026 | **Each zone now reports the battery and the health of its own radiator valves.** Until now a zone said whether the *gateway* was connected, and the controller carries on announcing a zone whether or not the valve in it still answers — so a dead valve stayed invisible until the room went cold, and there was no battery reading for a TRV anywhere in Indigo. Both were already being broadcast and the plugin was throwing them away. A zone reports the lowest battery of its valves, whether any of them is warning about its own battery, when one was last heard, and a plain sentence saying so; the battery also feeds Indigo's own low-battery list, so anything already watching batteries picks it up with no work. Where a zone has two valves everything reports the worse of them, because a zone is only as healthy as its unhappiest valve. **Nothing is guessed.** A valve that has not spoken yet reads "not known yet" rather than "silent", and a battery nobody has reported reads as no reading rather than as flat. A valve is only called silent once it has been heard since the plugin started, or once the plugin has been listening for longer than the silence threshold — otherwise a restart would raise a fault about its own downtime. How long counts as silent, and whether a silent valve marks the zone in error, are both settings. Two new menu items show what is known and let you forget a valve you have replaced. The battery decode itself is untested against this hardware, so anything it does not recognise is reported as no reading rather than as a number. The two three-valued states are named `trvStatus` and `trvBatteryWarn` rather than the more obvious `trvOnline`/`trvBatteryLow` for a reason worth knowing: Indigo will not change an existing state's type, so a state that has ever shipped as a yes/no cannot later be given a third value under the same name — it keeps the old type and the write is refused without a word in any log. 55 → 134 tests, 32 of 32 deliberate breakages caught. |
 | 1.5.2 | 11-Sep-2026 | **The bundle now carries the standard GitHub record.** Indigo plugins can carry a small note inside the bundle saying where their source lives on GitHub, spelt the way the Indigo Domotics and community plugins spell it. This one now has it, pointing at this repository. Nothing else changed. |
 | 1.5.1 | 08-Aug-2026 | **Added the missing support link.** Every Indigo plugin is meant to carry a web address inside its bundle — it is what the "About" item in the Plugins menu opens. This one had the entry but left it blank, so that menu item went nowhere. It now points at this repository. Nothing else changed. |
 | 1.5.0 | 27-Jul-2026 | Moved to paho-mqtt 2.1.0, the current release of the MQTT library. Version 2 requires the callback API version to be stated when the client is built and changes the shape of the connect and disconnect callbacks, so all three moved together — leave any one of them behind and the gateway simply never connects, which on this plugin means twelve heating zones quietly stop updating. Connection failures now report the broker's own wording ("Not authorized") instead of a number looked up in a table that version 2 had made unreachable. Fourteen new tests cover the change, taking the suite to 48. If you are upgrading by hand rather than through the release, delete `Contents/Packages/paho*` first: pip leaves the old copy in place alongside the new one, and the mixture can load the wrong code. |

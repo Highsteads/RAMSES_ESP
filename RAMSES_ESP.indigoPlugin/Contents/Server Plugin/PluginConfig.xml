@@ -91,6 +91,26 @@ can cycle that plug automatically after a prolonged offline period.</Label>
 
 	<Field id="sep_wd" type="separator"/>
 
+	<Field id="trvHeader" type="label" fontSize="regular">
+		<Label>Valve health</Label>
+	</Field>
+
+	<Field id="trvInfo" type="label" fontSize="small" alignWithControl="true">
+		<Label>Each zone device reports the battery and the last-heard time of the valves in that zone, read from the packets the valves broadcast about themselves. This is separate from the Online state, which is about the gateway's link rather than the valve.</Label>
+	</Field>
+
+	<Field id="trv_stale_hours" type="textfield" defaultValue="6">
+		<Label>Report a valve silent after (hours):</Label>
+		<Description>1-168. A valve only transmits when it has something to say</Description>
+	</Field>
+
+	<Field id="trv_report_faults" type="checkbox" defaultValue="true">
+		<Label>Mark the zone device in error when a valve goes silent:</Label>
+		<Description>Also what makes Device Health Monitor notice it</Description>
+	</Field>
+
+	<Field id="sep_trv" type="separator"/>
+
 	<Field id="debugHeader" type="label" fontSize="regular">
 		<Label>Logging</Label>
 	</Field>

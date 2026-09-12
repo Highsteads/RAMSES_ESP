@@ -6,6 +6,16 @@
         <CallbackMethod>menuToggleTimestamps</CallbackMethod>
     </MenuItem>
 
+    <MenuItem id="menuShowTrvStatus">
+        <Name>Show Valve Battery and Liveness</Name>
+        <CallbackMethod>menuShowTrvStatus</CallbackMethod>
+    </MenuItem>
+
+    <MenuItem id="menuForgetSilentTrvs">
+        <Name>Forget Valves Not Heard For 7 Days</Name>
+        <CallbackMethod>menuForgetSilentTrvs</CallbackMethod>
+    </MenuItem>
+
     <MenuItem id="sep1" isSeparator="true"/>
     <MenuItem id="showPluginInfo">
         <Name>Show Plugin Info</Name>

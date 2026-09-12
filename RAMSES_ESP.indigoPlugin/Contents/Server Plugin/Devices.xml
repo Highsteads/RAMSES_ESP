@@ -63,6 +63,88 @@ The device address is the zone index (0-11).</Label>
 				<TriggerLabel>Online status changed</TriggerLabel>
 				<ControlPageLabel>Online</ControlPageLabel>
 			</State>
+
+			<!-- === The VALVES in this zone ===============================
+			     Distinct from `online`/`lastSeen` above, which describe the gateway's
+			     MQTT link and the CONTROLLER's periodic broadcast. The controller keeps
+			     announcing a zone whether or not the TRV in it still answers, so these
+			     are the only states that can tell you a valve has died. -->
+
+			<!-- -1 means "not reported". A new Integer state is born as 0, and 0% is the
+			     most alarming value in the range — a valve that is transmitting cannot be
+			     in a battery-flat state, so 0 could only ever be a lie. -->
+			<State id="trvBattery">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Valve battery changed</TriggerLabel>
+				<ControlPageLabel>Valve Battery (%)</ControlPageLabel>
+			</State>
+
+			<!-- Both of these are THREE-valued, not boolean, and that is the whole point.
+			     A freshly created Boolean state materialises as FALSE, so a zone whose valve
+			     has simply not spoken yet would assert "silent" and "battery fine" — the
+			     first is a fault that is not happening and the second is reassurance nobody
+			     earned. A List gives "unknown" somewhere to live, and Indigo generates a
+			     boolean sub-state per option (trvStatus.silent, trvBatteryWarn.low) so a
+			     trigger can name the case it cares about without a string comparison.
+
+			     THEY ARE NAMED trvStatus / trvBatteryWarn AND NOT trvOnline / trvBatteryLow
+			     BECAUSE INDIGO WILL NOT CHANGE A STATE'S TYPE IN PLACE. Those two shipped
+			     as Booleans earlier in this version's development; declaring them here as
+			     Lists and calling stateListOrDisplayStateIdChanged() did NOT re-type them —
+			     measured live on all twelve zones, still bool after a restart. Worse, the
+			     server then REFUSED the whole updateStatesOnServer batch that carried the
+			     word "unknown" into a boolean, silently and with nothing in either log, so
+			     the other states written beside them were lost too. A new id is created
+			     with the declared type, which is the only route that works. Do not rename
+			     these back, and never change a shipped state's ValueType — add a new id. -->
+
+			<State id="trvBatteryWarn">
+				<ValueType>
+					<List>
+						<Option value="unknown">Not known yet</Option>
+						<Option value="ok">Battery fine</Option>
+						<Option value="low">Battery low</Option>
+					</List>
+				</ValueType>
+				<TriggerLabel>Valve battery warning changed</TriggerLabel>
+				<ControlPageLabel>Valve Battery</ControlPageLabel>
+			</State>
+
+			<State id="trvStatus">
+				<ValueType>
+					<List>
+						<Option value="unknown">Not known yet</Option>
+						<Option value="answering">Answering</Option>
+						<Option value="silent">Silent</Option>
+					</List>
+				</ValueType>
+				<TriggerLabel>Valve answering changed</TriggerLabel>
+				<ControlPageLabel>Valve Status</ControlPageLabel>
+			</State>
+
+			<State id="trvLastSeen">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Valve last heard changed</TriggerLabel>
+				<ControlPageLabel>Valve Last Heard</ControlPageLabel>
+			</State>
+
+			<State id="trvCount">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Valve count changed</TriggerLabel>
+				<ControlPageLabel>Valves In This Zone</ControlPageLabel>
+			</State>
+
+			<State id="trvIds">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Valve addresses changed</TriggerLabel>
+				<ControlPageLabel>Valve Addresses</ControlPageLabel>
+			</State>
+
+			<State id="trvSummary">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Valve summary changed</TriggerLabel>
+				<ControlPageLabel>Valve Summary</ControlPageLabel>
+			</State>
 		</States>
 		<!-- Show current temperature (built-in thermostat state) as primary display value -->
 		<UiDisplayStateId>temperatureInput1</UiDisplayStateId>

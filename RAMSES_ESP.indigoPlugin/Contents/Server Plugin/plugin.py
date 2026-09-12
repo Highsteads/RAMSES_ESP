@@ -5,9 +5,49 @@
 #              Connects to RAMSES-ESP wireless HVAC gateway via MQTT, auto-discovers
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
-# Author:      CliveS & Claude Fable 5.1
-# Date:        11-09-2026
-# Version:     1.5.2
+# Author:      CliveS & Claude Opus 5
+# Date:        12-09-2026
+# Version:     1.6.0
+#
+# v1.6.0 (12-09-2026): PER-VALVE BATTERY AND LIVENESS. A zone device's `online` and
+# `lastSeen` are about the GATEWAY's MQTT link and the CONTROLLER's periodic broadcast,
+# and the controller keeps announcing a zone whether or not the TRV in it still answers
+# — so a dead valve was invisible until the room went cold, and no battery reading for a
+# TRV existed anywhere in Indigo. Both facts were already on the air and this plugin was
+# dropping them: `_parse_ramses_message` decoded four controller opcodes and ignored
+# every packet a valve sent for itself.
+#
+# Each zone now reports its valves: trvBattery, trvBatteryWarn, trvStatus, trvLastSeen,
+# trvCount, trvIds and a plain-English trvSummary, aggregated to the WORST case because
+# a zone is only as healthy as its unhappiest valve. The reading is mirrored into
+# Indigo's own batteryLevel so the device list and every battery sweep see it.
+#
+# ZONE ATTRIBUTION IS MEASURED, NOT ASSUMED: a packet a valve addresses to the controller
+# carries its zone index as payload byte 0, and its SELF-addressed packets do not — byte
+# 0 is 00 there whatever the zone, so reading it would file every such valve under zone 0.
+#
+# FOUR THINGS THAT COULD ONLY HAVE BEEN WRONG:
+#   * `trvStatus` and `trvBatteryWarn` are three-valued, not boolean. A new Boolean state
+#     is born FALSE, so a zone whose valve had simply not spoken yet would have asserted
+#     "silent" and "battery fine" on eleven of twelve zones — seen live, then fixed.
+#   * They carry those NAMES because INDIGO WILL NOT RE-TYPE A STATE THAT ALREADY EXISTS.
+#     They first shipped as Booleans; redeclaring them as Lists and calling
+#     stateListOrDisplayStateIdChanged() left all twelve zones still holding a bool, and
+#     the server then dropped the entire batch that wrote the word "unknown" into one —
+#     silently, with nothing in the plugin log or the event log, taking the states written
+#     beside it down too. A new id is created with the declared type; that is the only
+#     route. Never change a shipped state's ValueType — add a new id.
+#   * `SupportsBatteryLevel` is claimed only when a real reading arrives. Declaring it up
+#     front creates a native batteryLevel of 0, and 0% reads to every battery sweep in
+#     the house as a flat cell.
+#   * Silence is only evidence if somebody was listening through it. A valve last heard
+#     before this plugin came up may have been transmitting all night into a receiver
+#     that was switched off, so it is judged only once heard since startup, or once we
+#     have been listening longer than the threshold itself.
+#
+# The 1060 battery decode is UNPROVEN against this hardware — no such packet was captured
+# from these HR92s in forty minutes of listening — so every shape it does not recognise
+# returns nothing rather than a plausible number. Tests 55 -> 133, mutation sweep 30/30.
 #
 # v1.5.2 (11-09-2026): GITHUBINFO. The bundle now carries the standard GitHub record
 # (GithubInfo: GithubUser/GithubRepo), as the Indigo Domotics and community plugins do.
@@ -163,6 +203,32 @@ try:
     from plugin_utils import install_timestamp_filter
 except ImportError:
     install_timestamp_filter = None
+try:
+    from plugin_utils import as_bool
+except ImportError:
+    # Local fallback so a stale bundled plugin_utils cannot break a pref read.
+    def as_bool(value, default=False):
+        if isinstance(value, bool):
+            return value
+        if value is None or value == "":
+            return default
+        s = str(value).strip().lower()
+        if s in ("true", "1", "yes", "on", "t"):
+            return True
+        if s in ("false", "0", "no", "off", "f"):
+            return False
+        return default
+
+# Per-valve liveness + battery. Kept in its own module with no indigo import so the
+# decoding can be driven by tests without a gateway.
+from ramses_trv import (            # noqa: E402
+    OPCODE_BATTERY,
+    TrvRegistry,
+    describe,
+    parse_battery,
+    trv_source,
+    trv_zone_from_fields,
+)
 
 # ==============================================================================
 # CONSTANTS
@@ -220,6 +286,49 @@ EPOCH_SENTINEL_YEAR    = 2020
 # the optimistic setpointHeat shown in the UI matches what the zone actually applies.
 SETPOINT_MIN_C         = 8.0
 SETPOINT_MAX_C         = 35.0
+
+# --- Per-valve tracking -------------------------------------------------------
+# A zone device's `online` and `lastSeen` are about the GATEWAY and the CONTROLLER, not
+# the valve: the controller keeps broadcasting a zone whether or not the TRV in it still
+# answers, so a dead valve is invisible until the room goes cold. These states are about
+# the valves themselves, built from the packets they send for themselves.
+#
+# The threshold is generous ON PURPOSE. An HR92 is a battery device that transmits when it
+# has something to say, so silence is normal for a while and only a LONG silence means
+# anything. MEASURED on this gateway on 12-09-2026 over a 31-minute capture of every packet:
+# 10 of the 12 valves were heard at all, and the gap between one valve's consecutive packets
+# had a MEDIAN of 3.3 minutes and a MAXIMUM of 20.0 minutes (29 gaps). Six hours is eighteen
+# times that worst case, so an ordinary quiet spell cannot reach it and a flat cell or a lost
+# valve will. Re-measure if the valves are ever replaced, or if the heating is left off for a
+# season — this capture was taken in September with every zone at its summer setpoint.
+TRV_STALE_HOURS_DEFAULT = 6
+TRV_STALE_HOURS_MIN     = 1
+TRV_STALE_HOURS_MAX     = 168
+TRV_STATE_FILENAME      = "trv_state.json"
+TRV_SAVE_INTERVAL       = 300          # seconds between writes of the valve record
+TRV_BATTERY_UNKNOWN     = -1           # a percentage nobody has measured
+
+
+def _tri(value, yes, no):
+    """A three-valued flag as the word Indigo stores. None is a real answer.
+
+    The two callers use DIFFERENT vocabularies on purpose: Indigo builds a boolean
+    sub-state per List option, so "trvStatus.silent" and "trvBatteryWarn.low" say
+    what a trigger is for, where a shared yes/no would give "trvStatus.no".
+    """
+    if value is None:
+        return "unknown"
+    return yes if value else no
+
+
+def _liveness(value):
+    """Is the zone's valve answering? unknown / answering / silent."""
+    return _tri(value, "answering", "silent")
+
+
+def _battery_warn(value):
+    """Is a valve warning about its battery? unknown / low / ok."""
+    return _tri(value, "low", "ok")
 
 
 # ==============================================================================
@@ -303,6 +412,21 @@ class Plugin(indigo.PluginBase):
         # from triggering a reconnect before paho's async on_connect has had time to fire.
         self._last_connect_time = 0.0
 
+        # Per-valve liveness + battery. Written from the MQTT callback thread and read
+        # from the main thread, hence its own lock — a separate one from pending_lock so
+        # a radio packet never has to wait on the zone-update drain.
+        self.trv          = TrvRegistry()
+        self.trv_lock     = threading.Lock()
+        self.trv_stale_hours = TRV_STALE_HOURS_DEFAULT
+        self.trv_report_faults = True
+        # Last summary WRITTEN per zone, so an unchanged one costs no Indigo call.
+        self._trv_published  = {}
+        self._trv_state_dirty = False
+        self._trv_warned      = set()   # zones already warned about, so silence is said once
+        self._trv_saved_at    = 0.0
+        # Set in startup(); a valve cannot be called silent for a stretch nobody heard.
+        self._trv_listening_since = time.time()
+
     # --------------------------------------------------------------------------
 
     def startup(self):
@@ -357,6 +481,11 @@ class Plugin(indigo.PluginBase):
                 self.logger.warning(f"  Could not restore zone device '{dev.name}': {exc}")
 
         self.logger.info(f"  Restored {restored} existing zone device(s)")
+        # Valve records are restored, but the clock that decides whether SILENCE means
+        # anything starts NOW — nothing can be called silent for a stretch when this
+        # plugin was not listening to it.
+        self._load_trv_state()
+        self._trv_listening_since = time.time()
         self.logger.info(f"  MQTT broker:  {self.broker_host}:{self.broker_port}")
         self.logger.info(f"  Gateway ID:   {self.gateway_id or '(awaiting discovery)'}")
         self.logger.info("=" * 60)
@@ -370,6 +499,7 @@ class Plugin(indigo.PluginBase):
 
     def shutdown(self):
         self.logger.info("RAMSES ESP Plugin shutting down")
+        self._save_trv_state()
         self._mqtt_disconnect()
 
     # --------------------------------------------------------------------------
@@ -433,6 +563,15 @@ class Plugin(indigo.PluginBase):
 
         # Power-cycle watchdog — recover a gateway that stays offline
         self._watchdog_tick(offline_since)
+
+        # Per-valve liveness + battery. Cheap: a summary that has not moved writes nothing.
+        try:
+            self._publish_trv_states()
+            if self._trv_state_dirty and time.time() - self._trv_saved_at > TRV_SAVE_INTERVAL:
+                self._save_trv_state()
+                self._trv_saved_at = time.time()
+        except Exception as exc:
+            self.logger.debug(f"Valve tracking pass failed: {exc}")
 
         # Apply zone name updates (store state + auto-rename device)
         for zone_idx, name in zone_names.items():
@@ -610,6 +749,11 @@ class Plugin(indigo.PluginBase):
                 # ShowCoolHeatEquipmentStateUI must be True for hvacHeaterIsOn to exist.
                 # This is the "flame on" indicator used by HomeKit to show active heating.
                 "ShowCoolHeatEquipmentStateUI": True,
+                # SupportsBatteryLevel is DELIBERATELY NOT SET HERE. Declaring it creates
+                # Indigo's native batteryLevel, which is born as 0 — and 0% reads to every
+                # battery sweep in the house as a flat cell. It is set in _write_trv_states
+                # the moment a real reading arrives, so the native state never exists
+                # holding a number nobody measured.
             }
             for key, val in capability_defaults.items():
                 if props.get(key) != val:
@@ -625,11 +769,41 @@ class Plugin(indigo.PluginBase):
             # Ensure hvacOperationMode is always Heat.
             # Indigo defaults this to Off (0) which makes HomeKit and other integrations
             # show the device as "OFF". Evohome zones are heat-only — always in Heat mode.
-            dev.updateStatesOnServer([
-                {"key": "hvacOperationMode", "value": indigo.kHvacMode.Heat},
-            ])
+            dev.updateStatesOnServer([{"key": "hvacOperationMode",
+                                       "value": indigo.kHvacMode.Heat}])
         except Exception as exc:
             self.logger.warning(f"deviceStartComm: could not set thermostat props for '{dev.name}': {exc}")
+
+        self._seed_trv_states(dev)
+
+    def _seed_trv_states(self, dev):
+        """Give the valve states an honest starting value, once, without asserting.
+
+        Indigo materialises a new Integer as 0 and a new List as an empty string, so a zone
+        whose valve has never spoken would otherwise show a flat battery and a blank verdict.
+        Seed the honest answer and never overwrite a real one.
+
+        WRITTEN IN ITS OWN CALL, NOT ALONGSIDE hvacOperationMode. A single unacceptable value
+        makes the server drop the WHOLE updateStatesOnServer batch — silently, with nothing in
+        the plugin log or the event log — so a seed that goes wrong must not be able to take
+        the thermostat mode with it. That is not hypothetical: it happened here, and the mode
+        write rode in the same batch.
+        """
+        try:
+            seed = []
+            if not dev.states.get("trvStatus"):
+                seed.append({"key": "trvStatus", "value": "unknown"})
+            if not dev.states.get("trvBatteryWarn"):
+                seed.append({"key": "trvBatteryWarn", "value": "unknown"})
+            if not dev.states.get("trvSummary"):
+                seed.append({"key": "trvSummary", "value": describe(None, time.time())})
+            if dev.states.get("trvBattery", 0) in (0, None):
+                seed.append({"key": "trvBattery", "value": TRV_BATTERY_UNKNOWN,
+                             "uiValue": "unknown"})
+            if seed:
+                dev.updateStatesOnServer(seed)
+        except Exception as exc:
+            self.logger.warning(f"deviceStartComm: could not seed valve states for '{dev.name}': {exc}")
 
     def deviceStopComm(self, dev):
         super(Plugin, self).deviceStopComm(dev)
@@ -1125,6 +1299,11 @@ class Plugin(indigo.PluginBase):
                     f"len={fields[7]} payload={payload_hex[:40]}"
                 )
 
+            # Every packet a VALVE sends is evidence it is alive, whatever it says.
+            # Done before the opcode dispatch so an opcode this plugin does not decode
+            # still counts — liveness is about the sender, not the subject.
+            self._note_trv_packet(fields, payload_hex, opcode)
+
             if opcode == OPCODE_ZONE_NAME:
                 self._parse_opcode_0004(fields, payload_hex, ts)
             elif opcode == OPCODE_ZONE_TEMP:
@@ -1138,6 +1317,33 @@ class Plugin(indigo.PluginBase):
             self.logger.error(
                 f"Error parsing RAMSES message '{msg_str[:80]}': {exc}"
             )
+
+    def _note_trv_packet(self, fields, payload_hex, opcode):
+        """Record a valve as alive, and its battery when the packet carries one.
+
+        Runs on the MQTT thread, so it touches nothing but the registry behind its own
+        lock — no Indigo call may be made from here. Wrapped whole: liveness is a
+        reporting nicety and must never cost the heating decode that follows it.
+        """
+        try:
+            addr = trv_source(fields)
+            if addr is None:
+                return
+            zone = trv_zone_from_fields(fields, payload_hex, MAX_ZONES)
+            pct = low = None
+            if opcode == OPCODE_BATTERY:
+                decoded = parse_battery(payload_hex)
+                if decoded is None:
+                    self.logger.debug(f"1060 from {addr}: unreadable payload {payload_hex}")
+                else:
+                    pct, low = decoded
+                    self.logger.debug(f"1060: {addr} battery={pct} low={low}")
+            with self.trv_lock:
+                self.trv.record(addr, time.time(), zone=zone,
+                                battery_pct=pct, battery_low=low)
+                self._trv_state_dirty = True
+        except Exception as exc:
+            self.logger.debug(f"Could not note TRV packet: {exc}")
 
     def _parse_temp_bytes(self, payload_hex, byte_offset):
         """
@@ -1969,6 +2175,135 @@ class Plugin(indigo.PluginBase):
         except Exception:
             return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # --------------------------------------------------------------------------
+    # Per-valve liveness + battery
+    # --------------------------------------------------------------------------
+
+    def _trv_state_path(self):
+        """Where the per-valve record is kept. A FILE, not pluginPrefs.
+
+        pluginPrefs are only flushed on a graceful shutdown, and this record is the
+        difference between knowing a valve's battery straight after a restart and
+        waiting hours for it to speak again — precisely the thing a hard crash would
+        otherwise cost.
+        """
+        base = _os.path.join(indigo.server.getInstallFolderPath(),
+                            "Preferences", "Plugins", self.pluginId)
+        _os.makedirs(base, exist_ok=True)
+        return _os.path.join(base, TRV_STATE_FILENAME)
+
+    def _load_trv_state(self):
+        try:
+            with open(self._trv_state_path(), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return
+        try:
+            with self.trv_lock:
+                loaded = self.trv.load_dict(data)
+            if loaded:
+                self.logger.info(f"  Restored {loaded} valve record(s)")
+        except Exception as exc:
+            self.logger.warning(f"Could not restore valve records: {exc}")
+
+    def _save_trv_state(self):
+        """Write the valve record atomically. A half-written file loses everything."""
+        try:
+            with self.trv_lock:
+                data = self.trv.to_dict()
+                self._trv_state_dirty = False
+            path = self._trv_state_path()
+            tmp  = f"{path}.tmp.{_os.getpid()}"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+                fh.flush()
+                _os.fsync(fh.fileno())
+            _os.replace(tmp, path)
+        except Exception as exc:
+            self.logger.debug(f"Could not save valve records: {exc}")
+
+    def _publish_trv_states(self):
+        """Push each zone's valve summary onto its device, only where it has changed."""
+        now   = time.time()
+        stale = self.trv_stale_hours * 3600.0
+        with self.trv_lock:
+            summaries = {z: self.trv.zone_summary(z, now, stale, self._trv_listening_since)
+                         for z in sorted(self.trv.known_zones())}
+
+        for zone, summary in summaries.items():
+            if summary is None or self._trv_published.get(zone) == summary:
+                continue
+            dev = self._find_zone_device(zone)
+            if dev is None:
+                continue
+            try:
+                self._write_trv_states(dev, summary, now)
+                self._trv_published[zone] = dict(summary)
+            except Exception as exc:
+                self.logger.warning(f"Could not publish valve states for Zone {zone}: {exc}")
+
+    def _write_trv_states(self, dev, summary, now):
+        """Write one zone's valve states, then its error state.
+
+        The error state is set LAST on purpose: updateStatesOnServer CLEARS a device's
+        error by default, so setting it first would have the very next write wipe it.
+        """
+        states = [
+            {"key": "trvCount",   "value": summary["count"]},
+            {"key": "trvIds",     "value": summary["addresses"]},
+            {"key": "trvSummary", "value": describe(summary, now)},
+        ]
+        if summary["last_seen"]:
+            states.append({"key": "trvLastSeen",
+                           "value": datetime.fromtimestamp(summary["last_seen"])
+                                            .strftime("%Y-%m-%d %H:%M:%S")})
+        # Three-valued on purpose: "unknown" is a real answer and must not round to a
+        # verdict either way. See the comment on these states in Devices.xml.
+        states.append({"key": "trvStatus", "value": _liveness(summary["online"])})
+        states.append({"key": "trvBatteryWarn", "value": _battery_warn(summary["battery_low"])})
+        if summary["battery"] is None:
+            states.append({"key": "trvBattery", "value": TRV_BATTERY_UNKNOWN,
+                           "uiValue": "unknown"})
+        else:
+            states.append({"key": "trvBattery", "value": int(summary["battery"]),
+                           "uiValue": f"{int(summary['battery'])}%"})
+        dev.updateStatesOnServer(states)
+
+        # Mirror into Indigo's OWN battery level so the device list, find_low_battery and
+        # every notifier that reads it see the valve without knowing this plugin exists.
+        # The CAPABILITY is claimed here rather than at device start, because declaring it
+        # creates a native batteryLevel of 0 and a fleet of thermostats reporting a flat
+        # battery is a worse fault than having no reading at all.
+        if summary["battery"] is not None:
+            try:
+                props = dev.pluginProps
+                if not props.get("SupportsBatteryLevel"):
+                    props["SupportsBatteryLevel"] = True
+                    dev.replacePluginPropsOnServer(props)
+                    dev = indigo.devices[dev.id]
+                dev.updateStateOnServer("batteryLevel", int(summary["battery"]))
+            except Exception as exc:
+                self.logger.debug(f"Could not mirror batteryLevel for '{dev.name}': {exc}")
+
+        if not self.trv_report_faults:
+            return
+        if summary["online"] is False:
+            try:
+                dev.setErrorStateOnServer("valve silent")
+            except Exception as exc:
+                self.logger.debug(f"Could not set error state on '{dev.name}': {exc}")
+            if dev.id not in self._trv_warned:
+                self._trv_warned.add(dev.id)
+                self.logger.warning(f"[TRV] {dev.name}: {describe(summary, now)}")
+        elif summary["online"] is True:
+            if dev.id in self._trv_warned:
+                self._trv_warned.discard(dev.id)
+                self.logger.info(f"[TRV] {dev.name}: answering again.")
+            try:
+                dev.setErrorStateOnServer("")
+            except Exception as exc:
+                self.logger.debug(f"Could not clear error state on '{dev.name}': {exc}")
+
     def _read_prefs(self):
         """Load MQTT settings and gateway ID from plugin preferences.
 
@@ -2002,6 +2337,11 @@ class Plugin(indigo.PluginBase):
         self.wd_offline_minutes = _as_int("watchdog_offline_minutes", 15, 5, 1440)
         self.wd_off_seconds     = _as_int("watchdog_off_seconds",     10, 3, 120)
         self.wd_max_cycles      = _as_int("watchdog_max_cycles",       3, 1, 20)
+
+        # Per-valve tracking
+        self.trv_stale_hours = _as_int("trv_stale_hours", TRV_STALE_HOURS_DEFAULT,
+                                       TRV_STALE_HOURS_MIN, TRV_STALE_HOURS_MAX)
+        self.trv_report_faults = as_bool(prefs.get("trv_report_faults", True), True)
         # Restore the persisted daily cycle counters so a reload mid-outage can't reset the cap.
         self.wd_cycle_day = str(prefs.get("wd_cycle_day", "")).strip()
         try:
@@ -2056,6 +2396,62 @@ class Plugin(indigo.PluginBase):
             indigo.server.log(f"{self.pluginDisplayName} v{self.pluginVersion}")
             for label, value in extras:
                 indigo.server.log(f"  {label} {value}")
+
+    def menuShowTrvStatus(self, valuesDict=None, typeId=None):
+        """Log what is known about every valve, worst first."""
+        now   = time.time()
+        stale = self.trv_stale_hours * 3600.0
+        with self.trv_lock:
+            addrs = self.trv.addresses()
+            zones = sorted(self.trv.known_zones())
+            summaries = {z: self.trv.zone_summary(z, now, stale, self._trv_listening_since)
+                         for z in zones}
+            silent = self.trv.silent_since(now, stale)
+        indigo.server.log("=== RAMSES valve battery and liveness ===")
+        indigo.server.log(f"  Valves heard: {len(addrs)} across {len(zones)} zone(s)")
+        indigo.server.log(f"  Silent after: {self.trv_stale_hours} hours"
+                          f"{'' if self.trv_report_faults else ' (device errors switched off)'}")
+        listening = now - self._trv_listening_since
+        indigo.server.log(f"  Listening for: {int(listening // 60)} minutes")
+        if not addrs:
+            indigo.server.log("  Nothing heard yet — valves transmit only when they have "
+                              "something to say, so give it a while.")
+            return True
+        for zone in zones:
+            dev  = self._find_zone_device(zone)
+            name = dev.name if dev else f"Zone {zone}"
+            indigo.server.log(f"  {name}: {describe(summaries[zone], now)}")
+        unplaced = [a for a in addrs
+                    if all(a not in (summaries[z]["addresses"] or "") for z in zones)]
+        if unplaced:
+            indigo.server.log(f"  Heard but not yet placed in a zone: {', '.join(unplaced)}")
+        if silent:
+            indigo.server.log("  Silent: " + ", ".join(
+                f"{a} ({int(age // 3600)}h)" for a, age in silent))
+        return True
+
+    def menuForgetSilentTrvs(self, valuesDict=None, typeId=None):
+        """Drop valves not heard for a week, so a replaced one stops flagging its zone.
+
+        Deliberately a MENU ITEM and not a timer. A valve that has genuinely died is
+        exactly the one that goes quiet, so forgetting it automatically would delete
+        the warning rather than raise it; dropping one is a decision for a person.
+        """
+        now = time.time()
+        with self.trv_lock:
+            gone = [a for a, _ in self.trv.silent_since(now, 7 * 24 * 3600.0)]
+            for addr in gone:
+                self.trv.forget(addr)
+        if not gone:
+            indigo.server.log("[TRV] Nothing to forget — no valve has been silent for a week.")
+            return True
+        # Recompute from scratch: a forgotten valve changes its zone's summary.
+        self._trv_published.clear()
+        self._trv_warned.clear()
+        self._save_trv_state()
+        indigo.server.log(f"[TRV] Forgot {len(gone)} valve(s): {', '.join(gone)}. "
+                          f"Each will be picked up again if it starts transmitting.")
+        return True
 
     def menuToggleTimestamps(self):
         self.timestamp_enabled = not self.timestamp_enabled
