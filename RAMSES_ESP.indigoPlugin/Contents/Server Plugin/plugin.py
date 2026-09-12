@@ -46,7 +46,7 @@
 #     have been listening longer than the threshold itself.
 #
 # The 1060 battery decode is UNPROVEN against this hardware — no such packet was captured
-# from these HR92s in forty minutes of listening — so every shape it does not recognise
+# from these HR92s in 56 minutes of listening across two captures — so every shape it misses
 # returns nothing rather than a plausible number. Tests 55 -> 133, mutation sweep 30/30.
 #
 # v1.5.2 (11-09-2026): GITHUBINFO. The bundle now carries the standard GitHub record
@@ -295,9 +295,9 @@ SETPOINT_MAX_C         = 35.0
 #
 # The threshold is generous ON PURPOSE. An HR92 is a battery device that transmits when it
 # has something to say, so silence is normal for a while and only a LONG silence means
-# anything. MEASURED on this gateway on 12-09-2026 over a 31-minute capture of every packet:
+# anything. MEASURED on this gateway on 12-09-2026 over a 35-minute capture of every packet:
 # 10 of the 12 valves were heard at all, and the gap between one valve's consecutive packets
-# had a MEDIAN of 3.3 minutes and a MAXIMUM of 20.0 minutes (29 gaps). Six hours is eighteen
+# had a MEDIAN of 3.3 minutes and a MAXIMUM of 20.0 minutes (38 gaps). Six hours is eighteen
 # times that worst case, so an ordinary quiet spell cannot reach it and a flat cell or a lost
 # valve will. Re-measure if the valves are ever replaced, or if the heating is left off for a
 # season — this capture was taken in September with every zone at its summer setpoint.
