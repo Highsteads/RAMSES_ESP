@@ -81,11 +81,27 @@ def parse_battery(payload_hex):
     do not recognise is a layout we cannot read, and half-decoding it would invent a
     battery percentage out of somebody else's field.
 
-    UNPROVEN AGAINST THIS HARDWARE. No 1060 was captured from these HR92s while this
-    was written, so the layout rests on the community convention rather than on a
-    specimen off this roof. That is precisely why every unrecognised shape returns
-    None rather than a plausible number: an invented battery reading is worse than
-    no reading, because it silences the very warning the feature exists to give.
+    PROVEN AGAINST THIS HARDWARE 13-09-2026. Four 1060 packets captured off the broker
+    from 04:254255 (Bedroom 1) in a 20-minute read-only capture, 72 RAMSES messages
+    seen in the window so silence would have been meaningful:
+
+        074  I --- 04:254255 --:------ 01:091567 1060 003 016401
+        074  I --- 04:254255 --:------ 04:254255 1060 003 006401
+
+    Byte 0 is the zone index when the packet is addressed to the CONTROLLER (01 =
+    zone 1) and 00 when the valve addresses itself — the attribution rule in
+    trv_zone_from_fields, confirmed on the wire. Byte 1 is 0x64 = 100, which halves to
+    50%, and the plugin duly wrote 50% to that zone. Byte 2 is 0x01, not low.
+
+    WHAT IS STILL NOT PROVEN is the RANGE. Across 65 observations (61 logged decodes
+    plus these 4 raw) the level byte has only ever been 0x64 or 0xC8 — 50% or 100%,
+    never anything between — so on these HR92s it reads as a coarse two-step gauge
+    rather than a meter. Whether an ageing cell ever emits an intermediate value is
+    UNKNOWN, and the sample is far too small to say it does not.
+
+    Every unrecognised shape still returns None rather than a plausible number: an
+    invented battery reading is worse than no reading, because it silences the very
+    warning the feature exists to give.
     """
     if not isinstance(payload_hex, str):
         return None
