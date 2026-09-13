@@ -109,6 +109,11 @@ can cycle that plug automatically after a prolonged offline period.</Label>
 		<Description>Also what makes Device Health Monitor notice it</Description>
 	</Field>
 
+	<Field id="trv_expect_every_zone" type="checkbox" defaultValue="true">
+		<Label>Warn when a zone's valve has never been heard at all:</Label>
+		<Description>Untick for a zone with no radiator valve</Description>
+	</Field>
+
 	<Field id="sep_trv" type="separator"/>
 
 	<Field id="debugHeader" type="label" fontSize="regular">

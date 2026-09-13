@@ -4,8 +4,8 @@
 # Description: Per-valve liveness and battery, decoded from the RAMSES-II packets the
 #              TRVs broadcast about themselves. No Indigo import — this is the test seam.
 # Author:      CliveS & Claude Opus 5
-# Date:        12-09-2026
-# Version:     1.0
+# Date:        13-09-2026
+# Version:     1.1
 #
 # WHY THIS EXISTS. A zone device's `online` and `lastSeen` describe the GATEWAY's MQTT
 # link and the CONTROLLER's periodic broadcast — the controller keeps announcing a zone
@@ -272,6 +272,35 @@ def _hours_words(seconds):
     return "a day" if days == 1 else f"{days} days"
 
 
+def unheard_summary(listened_long_enough):
+    """What to publish for a zone that HAS a device but whose valve has never been heard.
+
+    `zone_summary` returns None for a zone the registry knows nothing about, and the
+    caller used to skip exactly those — which made the one valve most likely to be
+    missing from the registry, a valve already dead when the plugin started listening,
+    the single case that could never raise a fault. It sat on its seeded "unknown" for
+    as long as it stayed dead. Live: the Utility Room valve went quiet on 02-06-2026 and
+    still read "unknown" on 13-09-2026, 103 days later, with a working detector either
+    side of it and nothing in between.
+
+    Absence of a record is not absence of a fault. Once we have been listening for
+    longer than the threshold, having heard nothing whatever from a zone we hold a
+    device for is a verdict rather than a shrug, so `online` is False and it takes the
+    same path to the error state as a valve that fell quiet while we watched. Before
+    that it is None, which is the same grace a known valve gets after a restart.
+    """
+    return {
+        "count":       0,
+        "addresses":   "",
+        "battery":     None,
+        "battery_low": None,
+        "last_seen":   None,
+        "oldest_seen": None,
+        "online":      False if listened_long_enough else None,
+        "silent":      "",
+    }
+
+
 def describe(summary, now):
     """One plain-English sentence about a zone's valves.
 
@@ -282,6 +311,15 @@ def describe(summary, now):
     """
     if not summary:
         return "No valve heard for this zone yet."
+
+    # A zone we hold a device for and have never heard a valve in. Kept ahead of the
+    # count arithmetic below, which would otherwise read "All 0 valves answering".
+    if summary["count"] == 0:
+        if summary["online"] is False:
+            return ("Nothing has ever been heard from this zone's valve. It has either "
+                    "lost power, gone out of range, or is set to a different zone.")
+        return ("Nothing heard from this zone's valve yet, and it is too soon since the "
+                "restart to say whether that is a fault.")
 
     n = summary["count"]
     what = "The valve" if n == 1 else ("Both valves" if n == 2 else f"All {n} valves")

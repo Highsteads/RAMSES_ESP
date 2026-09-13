@@ -15,6 +15,7 @@
 import ast
 import os
 import sys
+import time
 
 import pytest
 
@@ -732,3 +733,133 @@ class TestSeeding:
         written = dev.written[-1] if dev.written else {}
         for key in ("trvStatus", "trvBatteryWarn", "trvBattery", "trvSummary"):
             assert key not in written, f"{key} was clobbered on restart"
+
+
+# ---------------------------------------------------------------------------
+class TestAZoneWhoseValveWasNeverHeard:
+    """The hole that let a dead valve read "unknown" for 103 days.
+
+    zone_summary returns None for a zone the registry knows nothing about, and
+    _publish_trv_states used to iterate known_zones() alone — so a valve that had
+    already stopped transmitting before the plugin started listening never entered the
+    registry, was never summarised, and could never set the error state Device Health
+    Monitor reads. It kept the seeded "unknown", which reads as "no verdict yet".
+
+    Live case behind every test here: the Utility Room valve fell silent on 02-06-2026
+    and was still reading "unknown" on 13-09-2026, with a working detector on both
+    sides of it. These drive the REAL _publish_trv_states, not the seam alone, because
+    the seam was right and the caller was not.
+    """
+
+    STALE = 6 * HOUR
+
+    def _plug(self, rp, plug, monkeypatch, *, listening_ago, zone=8, expect=True):
+        dev = FakeDev(dev_id=77, name="Utility Room Radiator")
+        monkeypatch.setattr(rp.indigo, "devices", {dev.id: dev}, raising=False)
+        plug.trv_stale_hours       = 6
+        plug.trv_report_faults     = True
+        plug.trv_expect_every_zone = expect
+        plug.zone_devices          = {zone: dev.id}
+        plug._trv_published        = {}
+        plug._trv_warned           = set()
+        plug._trv_listening_since  = time.time() - listening_ago
+        return dev
+
+    # -- the seam --------------------------------------------------------
+
+    def test_past_the_threshold_never_heard_is_a_verdict(self):
+        assert T.unheard_summary(True)["online"] is False
+
+    def test_inside_the_grace_it_is_still_unknown(self):
+        assert T.unheard_summary(False)["online"] is None
+
+    def test_it_carries_every_key_the_writer_reads(self):
+        got = set(T.unheard_summary(True))
+        want = {"count", "addresses", "battery", "battery_low",
+                "last_seen", "oldest_seen", "online", "silent"}
+        assert got == want, f"shape differs from zone_summary: {got ^ want}"
+
+    def test_it_claims_no_battery_reading(self):
+        s = T.unheard_summary(True)
+        assert s["battery"] is None and s["battery_low"] is None
+        assert s["count"] == 0 and s["last_seen"] is None
+
+    # -- the words -------------------------------------------------------
+
+    def test_the_sentence_says_nothing_was_ever_heard(self):
+        said = T.describe(T.unheard_summary(True), NOW)
+        low = said.lower()
+        assert "nothing" in low and "ever" in low, said
+        assert "0 valve" not in said, "fell through to the count arithmetic"
+        assert said.endswith(".")
+
+    def test_the_sentence_inside_the_grace_does_not_accuse(self):
+        said = T.describe(T.unheard_summary(False), NOW)
+        assert "too soon" in said
+        assert "0 valve" not in said
+
+    def test_the_sentence_is_plain_ascii(self):
+        for arg in (True, False):
+            said = T.describe(T.unheard_summary(arg), NOW)
+            assert said.isascii(), f"non-ASCII reached the summary: {said!r}"
+            assert "|" not in said and "=" not in said
+
+    # -- the caller, which is where the bug actually lived ----------------
+
+    def test_a_zone_with_a_device_and_no_record_is_reported_silent(
+            self, rp, plug, monkeypatch):
+        dev = self._plug(rp, plug, monkeypatch, listening_ago=7 * HOUR)
+        plug._publish_trv_states()
+        assert dev.errors == ["valve silent"], (
+            "a zone we hold a device for and have never heard a valve in raised nothing "
+            "-- this is the Utility Room bug")
+
+    def test_it_also_writes_the_states_a_person_reads(self, rp, plug, monkeypatch):
+        dev = self._plug(rp, plug, monkeypatch, listening_ago=7 * HOUR)
+        plug._publish_trv_states()
+        assert dev.states.get("trvStatus") == "silent"
+        said = dev.states.get("trvSummary", "").lower()
+        assert "nothing" in said and "ever" in said, said
+
+    def test_it_says_nothing_while_the_restart_grace_holds(self, rp, plug, monkeypatch):
+        dev = self._plug(rp, plug, monkeypatch, listening_ago=60)
+        plug._publish_trv_states()
+        assert dev.errors == [], "accused a valve of silence it had no chance to break"
+        assert dev.states.get("trvStatus") == "unknown"
+
+    def test_the_setting_can_turn_it_off_for_a_zone_with_no_valve(
+            self, rp, plug, monkeypatch):
+        dev = self._plug(rp, plug, monkeypatch, listening_ago=7 * HOUR, expect=False)
+        plug._publish_trv_states()
+        assert dev.errors == [] and dev.written == [], (
+            "unticking the setting must leave an underfloor zone entirely alone")
+
+    def test_marking_the_zone_in_error_is_still_honoured(self, rp, plug, monkeypatch):
+        dev = self._plug(rp, plug, monkeypatch, listening_ago=7 * HOUR)
+        plug.trv_report_faults = False
+        plug._publish_trv_states()
+        assert dev.errors == [], "the user's own error-state setting was overridden"
+
+    def test_a_zone_with_no_device_is_not_invented(self, rp, plug, monkeypatch):
+        dev = self._plug(rp, plug, monkeypatch, listening_ago=7 * HOUR)
+        plug.zone_devices = {}
+        plug._publish_trv_states()
+        assert dev.errors == [] and dev.written == []
+
+    def test_a_valve_that_is_answering_is_untouched_by_any_of_this(
+            self, rp, plug, monkeypatch):
+        dev = self._plug(rp, plug, monkeypatch, listening_ago=7 * HOUR)
+        plug.trv.record("04:253997", time.time(), zone=8, battery_pct=100, battery_low=False)
+        plug._publish_trv_states()
+        # An answering valve CLEARS the error state (writes ""), which is not the same
+        # as never touching it — the accusation is what must not appear.
+        assert "valve silent" not in dev.errors
+        assert dev.states.get("trvStatus") == "answering"
+        assert dev.states.get("trvBattery") == 100
+
+    def test_it_is_said_once_not_on_every_pass(self, rp, plug, monkeypatch):
+        dev = self._plug(rp, plug, monkeypatch, listening_ago=7 * HOUR)
+        for _ in range(5):
+            plug._publish_trv_states()
+        assert len(dev.written) == 1, f"wrote {len(dev.written)} times for one unchanged verdict"
+        assert plug.logger.warning.call_count == 1

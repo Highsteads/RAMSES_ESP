@@ -6,8 +6,41 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5
-# Date:        12-09-2026
-# Version:     1.6.0
+# Date:        13-09-2026
+# Version:     1.7.0
+#
+# v1.7.0 (13-09-2026): A VALVE THAT WAS ALREADY DEAD WHEN WE STARTED LISTENING IS NOW
+# REPORTED. v1.6.0's detector had a hole the exact shape of the fault it was written for.
+# `_publish_trv_states` iterated `self.trv.known_zones()` — zones the registry had heard a
+# valve in at least once — so a valve that had stopped transmitting BEFORE the plugin came
+# up never entered the registry, was never summarised, never written and could never set
+# the error state Device Health Monitor reads. It kept the "unknown" `_seed_trv_states`
+# gives a new device, which reads as patience rather than as a fault.
+#
+# LIVE, AND THIS IS THE WHOLE ARGUMENT FOR THE FIX: the Utility Room valve here stopped
+# transmitting on 02-06-2026 and still read "unknown" on 13-09-2026 — 103 days — with a
+# working detector on both sides of it. Every other zone reported 35 to 43 times a day
+# throughout. It was found by hand, by a person noticing a cold radiator, which is the
+# thing v1.6.0 existed to make unnecessary.
+#
+#   * The zones covered are now the UNION of what the registry has heard and what we hold
+#     a zone device for. `unheard_summary()` in ramses_trv.py gives the verdict, so it
+#     sits in the seam with the rest of the liveness logic and is driven by tests.
+#   * The restart grace is UNCHANGED and still applies: never-heard is `None` until we
+#     have been listening longer than the threshold, only then `False`. A reload cannot
+#     raise a fault about its own downtime.
+#   * `trv_expect_every_zone` (default True) turns it off for a zone that legitimately
+#     has no radiator valve — underfloor, or a relay-driven zone. Default True because
+#     silence about a zone we hold a device for is the fault this feature exists to
+#     raise, and a permanent false warning on a valveless zone teaches its owner to
+#     ignore the real one, which costs more than the warning is worth.
+#   * `describe()` gained a count==0 branch, ahead of the count arithmetic that would
+#     otherwise have read "All 0 valves answering".
+#   * `zone_devices` is COPIED before iterating — it is mutated from deviceStartComm on
+#     Indigo's dispatch thread while this runs on the worker.
+#   * Tests 142 -> 157. Five deliberate breakages, all caught: the union reverted, the
+#     verdict forced to unknown, the describe branch removed, the off switch ignored,
+#     and the restart grace dropped.
 #
 # v1.6.0 (12-09-2026): PER-VALVE BATTERY AND LIVENESS. A zone device's `online` and
 # `lastSeen` are about the GATEWAY's MQTT link and the CONTROLLER's periodic broadcast,
@@ -228,6 +261,7 @@ from ramses_trv import (            # noqa: E402
     parse_battery,
     trv_source,
     trv_zone_from_fields,
+    unheard_summary,
 )
 
 # ==============================================================================
@@ -419,6 +453,10 @@ class Plugin(indigo.PluginBase):
         self.trv_lock     = threading.Lock()
         self.trv_stale_hours = TRV_STALE_HOURS_DEFAULT
         self.trv_report_faults = True
+        # Defaulted here as well as in the pref read: _publish_trv_states runs from the
+        # worker and swallows its own exceptions at DEBUG, so an attribute missing on an
+        # early pass would take valve tracking out silently.
+        self.trv_expect_every_zone = True
         # Last summary WRITTEN per zone, so an unchanged one costs no Indigo call.
         self._trv_published  = {}
         self._trv_state_dirty = False
@@ -2223,12 +2261,31 @@ class Plugin(indigo.PluginBase):
             self.logger.debug(f"Could not save valve records: {exc}")
 
     def _publish_trv_states(self):
-        """Push each zone's valve summary onto its device, only where it has changed."""
+        """Push each zone's valve summary onto its device, only where it has changed.
+
+        The zones covered are the UNION of what the registry has heard and what we hold
+        a device for. Iterating known_zones() alone was a hole the exact shape of a dead
+        valve: a valve that had already stopped transmitting before the plugin started
+        listening never entered the registry, so its zone was never summarised, never
+        written and could never set an error state. It kept the "unknown" that
+        _seed_trv_states gives a new device, indefinitely, which reads as "no verdict
+        yet" and is indistinguishable from a valve the gateway simply has not got round
+        to hearing. Found 13-09-2026 on the Utility Room, 103 days after it died.
+
+        zone_devices is copied rather than iterated: it is mutated from deviceStartComm
+        on Indigo's dispatch thread and this runs on the worker.
+        """
         now   = time.time()
         stale = self.trv_stale_hours * 3600.0
         with self.trv_lock:
+            listened_long_enough = (now - self._trv_listening_since) > stale
             summaries = {z: self.trv.zone_summary(z, now, stale, self._trv_listening_since)
                          for z in sorted(self.trv.known_zones())}
+
+        if self.trv_expect_every_zone:
+            for zone in sorted(dict(self.zone_devices)):
+                if summaries.get(zone) is None:
+                    summaries[zone] = unheard_summary(listened_long_enough)
 
         for zone, summary in summaries.items():
             if summary is None or self._trv_published.get(zone) == summary:
@@ -2342,6 +2399,12 @@ class Plugin(indigo.PluginBase):
         self.trv_stale_hours = _as_int("trv_stale_hours", TRV_STALE_HOURS_DEFAULT,
                                        TRV_STALE_HOURS_MIN, TRV_STALE_HOURS_MAX)
         self.trv_report_faults = as_bool(prefs.get("trv_report_faults", True), True)
+        # Default True: silence about a zone we hold a device for is the fault this
+        # whole feature exists to raise. Untick it where a zone legitimately has no
+        # radiator valve — underfloor heating, or a zone driven by a relay — otherwise
+        # that zone reports a silent valve for ever and trains its owner to ignore the
+        # warning, which costs more than the warning is worth.
+        self.trv_expect_every_zone = as_bool(prefs.get("trv_expect_every_zone", True), True)
         # Restore the persisted daily cycle counters so a reload mid-outage can't reset the cap.
         self.wd_cycle_day = str(prefs.get("wd_cycle_day", "")).strip()
         try:
