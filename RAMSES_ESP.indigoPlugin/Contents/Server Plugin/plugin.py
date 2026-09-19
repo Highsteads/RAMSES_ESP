@@ -6,8 +6,46 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5
-# Date:        13-09-2026
-# Version:     1.7.0
+# Date:        19-09-2026
+# Version:     1.8.0
+#
+# v1.8.0 (19-09-2026): THE WATCHDOG NOW PROVES THE PLUG MOVED, INSTEAD OF ASSUMING IT.
+# `indigo.device.turnOff()` and `turnOn()` are fire and forget: Indigo hands the command to
+# the plug's owning plugin and returns, so a command to an unreachable plug raises nothing
+# at all. The old `_power_cycle_plug` read that silence as success.
+#
+# LIVE, AND IT IS THE WHOLE ARGUMENT FOR THE FIX: on 19-09-2026 the IoT WiFi dropped for
+# about ninety minutes. The gateway went offline with everything else on it, and so did the
+# plug that feeds it. The watchdog fired three power cycles, at 17:51, 18:06 and 18:21.
+# ShellyDirect logged `No route to <plug>` for all six commands. The watchdog logged every
+# one of them as a success, sent two Pushovers saying it had cycled the gateway, spent the
+# entire daily cap on cycles that never happened, and at 18:37 sent "giving up, it needs a
+# human". The gateway came back on its own at 18:46 when the WiFi returned. Not one of
+# those statements was true, and the log read as though the hardware were at fault.
+#
+#   * The plug's OWN REPORTED STATE is now the evidence. `_power_cycle_plug` waits for the
+#     device to report the switch (`WD_VERIFY_SECONDS`) and returns True seen, False did
+#     not move, None publishes nothing to check. The device is re-fetched on every read —
+#     a cached one reports what it held when the cycle started and confirms anything.
+#   * A CYCLE COUNTS AGAINST THE DAILY CAP ONLY ONCE THE PLUG HAS MOVED, and the "cycled"
+#     Pushover is sent only then. No-ops can no longer eat the budget or claim credit.
+#   * A PRE-FLIGHT CHECK SKIPS AN UNREACHABLE PLUG ENTIRELY. The plug and the gateway are
+#     nearly always on the same network, so when the plug is unreachable too, cutting its
+#     power is impossible AND beside the point — and firing the command anyway risks the
+#     owning plugin delivering it late, switching the gateway off at a moment nobody chose.
+#     `_plug_unreachable_reason` asks only questions every Indigo device can answer
+#     (`enabled`, `errorState`, a `deviceOnline`-style state), so it keys on no plugin ID
+#     and no device name. An ABSENT state is not evidence of an offline plug, so the
+#     unknown case proceeds.
+#   * A DEFINITE NO IS THE ONLY NO. `_scalar_bool` accepts bool, int and str and answers
+#     None for anything else, because the v2 API hands custom states back as the strings
+#     "True"/"False" and `bool("False")` is True.
+#   * Attempts that did not cut power escalate SEPARATELY, once per outage, saying the plug
+#     could not be reached rather than blaming the gateway. The give-up alert now counts
+#     the cycles that really happened.
+#   * A lost OFF no longer waits out an off-window that never started, and no longer raises
+#     NEEDS HELP — that alert means the gateway is stranded without power, which is the one
+#     thing a command that never landed cannot have caused.
 #
 # v1.7.0 (13-09-2026): A VALVE THAT WAS ALREADY DEAD WHEN WE STARTED LISTENING IS NOW
 # REPORTED. v1.6.0's detector had a hole the exact shape of the fault it was written for.
@@ -342,6 +380,16 @@ TRV_STATE_FILENAME      = "trv_state.json"
 TRV_SAVE_INTERVAL       = 300          # seconds between writes of the valve record
 TRV_BATTERY_UNKNOWN     = -1           # a percentage nobody has measured
 
+# --- Power-cycle watchdog: proving a plug command actually landed -------------
+# indigo.device.turnOff()/turnOn() are FIRE AND FORGET. Indigo queues the command to the
+# plug's owning plugin and returns, so a command to an unreachable plug raises NOTHING.
+# On 19-Sep-2026 the IoT WiFi dropped, the watchdog fired three cycles at a plug it could
+# not reach, logged all six commands as successful, sent two Pushovers saying it had cycled
+# the gateway, spent the whole daily cap and then asked for a human. Every claim was false.
+# So the plug's own reported state is the evidence, never the absence of an exception.
+WD_VERIFY_SECONDS      = 8.0           # how long to wait for the plug to report the new state
+WD_VERIFY_POLL         = 0.5           # seconds between reads while waiting
+
 
 def _tri(value, yes, no):
     """A three-valued flag as the word Indigo stores. None is a real answer.
@@ -431,6 +479,11 @@ class Plugin(indigo.PluginBase):
         self.wd_cycle_day       = ""     # "YYYY-MM-DD" the daily counter belongs to (persisted)
         self.wd_cycles_today    = 0      # cycles done today, capped at wd_max_cycles (persisted)
         self.wd_gave_up_alerted = False  # one "giving up" Pushover per outage
+        # A cycle only counts against wd_cycles_today once the plug has been SEEN to move.
+        # These track the attempts that never happened, so an unreachable plug cannot quietly
+        # eat the daily cap (19-Sep-2026).
+        self.wd_no_cycle_streak  = 0     # consecutive attempts that did not cycle the plug
+        self.wd_no_cycle_alerted = False # one "could not cycle" Pushover per outage
 
         # Known zone -> Indigo device ID mapping (rebuilt from existing devs at startup)
         self.zone_devices       = {}                 # {zone_idx(int): indigo_dev_id(int)}
@@ -1850,36 +1903,88 @@ class Plugin(indigo.PluginBase):
                 )
                 self._send_watchdog_pushover(
                     "RAMSES watchdog giving up",
-                    f"Gateway still offline after {self.wd_max_cycles} power "
+                    f"Gateway still offline after {self.wd_cycles_today} power "
                     f"cycle(s) today — it needs a human.",
                     priority="1",
                 )
             return
 
         # decision == "cycle"
-        if self.wd_plug_id not in indigo.devices:
+        dev = self._plug_device()
+        if dev is None:
             self.logger.error(
                 f"[Watchdog] Configured plug device {self.wd_plug_id} not found — "
                 f"reselect it in Plugins -> RAMSES ESP -> Configure"
             )
             return
 
-        offline_secs = now - offline_since
-        mins = int(offline_secs // 60)
+        mins = int((now - offline_since) // 60)
+
+        # Spacing applies to every ATTEMPT, cycled or not, so a plug we cannot reach is
+        # retried on the normal schedule instead of every main-loop pass.
         self.wd_last_cycle_ts = now
-        self.wd_cycles_today += 1
+
+        # The plug and the gateway are almost always on the same network. If the plug is
+        # unreachable too, cutting its power is both impossible and beside the point — and
+        # firing the command anyway risks the owning plugin delivering it late, switching the
+        # gateway off at a moment nobody chose. Skip, and do not spend a cycle on it.
+        unreachable = self._plug_unreachable_reason(dev)
+        if unreachable:
+            self._note_no_cycle(
+                mins,
+                f"its plug is unreachable ({unreachable}), so this looks like a network "
+                f"fault rather than a stuck gateway",
+            )
+            self._persist_watchdog_state()
+            return
+
         self._persist_watchdog_state()
         self.logger.warning(
             f"[Watchdog] Gateway offline {mins}m — power-cycling its plug "
-            f"(off {self.wd_off_seconds}s, cycle #{self.wd_cycles_today} of "
+            f"(off {self.wd_off_seconds}s, cycle #{self.wd_cycles_today + 1} of "
             f"{self.wd_max_cycles} today)"
         )
+
+        # Only now is there anything to announce, and only if the plug actually moves.
+        cycled = self._power_cycle_plug()
+        if cycled is False:
+            self._note_no_cycle(mins, "its plug never reported the switch, so no power was cut")
+            self._persist_watchdog_state()
+            return
+
+        self.wd_cycles_today   += 1
+        self.wd_no_cycle_streak = 0
+        self._persist_watchdog_state()
         self._send_watchdog_pushover(
             "RAMSES watchdog power-cycled gateway",
             f"Gateway offline {mins}m — plug cycled "
             f"(#{self.wd_cycles_today} of {self.wd_max_cycles} today).",
         )
-        self._power_cycle_plug()
+
+    def _note_no_cycle(self, mins, reason):
+        """Record an attempt that did not cut power, and say so — once per outage.
+
+        A cycle that never happened must not count against the daily cap: spending the budget
+        on no-ops is what left the 19-Sep outage with three "cycles", none of them real, and a
+        give-up alert asking for a human the gateway did not need. Warn on the first one so the
+        reason is in the log, then stay quiet until the count reaches the cap, where ONE
+        Pushover goes out naming the real problem.
+        """
+        self.wd_no_cycle_streak += 1
+        if self.wd_no_cycle_streak == 1:
+            self.logger.warning(f"[Watchdog] Gateway offline {mins}m but not cycling — {reason}")
+        else:
+            self.logger.debug(
+                f"[Watchdog] Still not cycling (attempt {self.wd_no_cycle_streak}) — {reason}"
+            )
+        if self.wd_no_cycle_streak >= self.wd_max_cycles and not self.wd_no_cycle_alerted:
+            self.wd_no_cycle_alerted = True
+            self._send_watchdog_pushover(
+                "RAMSES watchdog cannot cycle the plug",
+                f"The gateway has been offline {mins} minutes and the watchdog has not been "
+                f"able to power-cycle it: {reason}. No power has been cut.",
+                priority="1",
+            )
 
     def _watchdog_decision(self, now, offline_since):
         """Pure decision for the watchdog — returns 'idle' | 'cycle' | 'giveup'.
@@ -1890,7 +1995,10 @@ class Plugin(indigo.PluginBase):
         if not self.wd_enabled or not self.wd_plug_id:
             return "idle"
         if offline_since is None:
-            self.wd_gave_up_alerted = False   # gateway online — re-arm for next outage
+            # Gateway online — re-arm every per-outage latch for the next one.
+            self.wd_gave_up_alerted  = False
+            self.wd_no_cycle_alerted = False
+            self.wd_no_cycle_streak  = 0
             return "idle"
 
         offline_secs = now - offline_since
@@ -1909,34 +2017,173 @@ class Plugin(indigo.PluginBase):
             return "giveup"
         return "cycle"
 
-    def _power_cycle_plug(self):
-        """Switch the gateway plug OFF, wait wd_off_seconds, then back ON — all within this one
-        tick. A try/finally guarantees the plug is switched back ON even if self.sleep() raises
-        StopThread (plugin shutting down mid-cycle), so the gateway is never stranded without
-        power. Main thread only.
+    def _plug_device(self):
+        """The configured plug device, or None if it is not there. Main thread only."""
+        try:
+            return indigo.devices[self.wd_plug_id]
+        except Exception:
+            return None
+
+    def _plug_unreachable_reason(self, dev):
+        """Why the plug cannot be commanded right now, as a phrase — or "" if it can be.
+
+        Deliberately generic: the plug could belong to any plugin, or to none, so nothing here
+        keys on a plugin ID or a device name. It asks the three questions every Indigo device
+        can answer, and treats only a definite NO as a reason. An absent state is not evidence
+        of an offline plug, so the unknown case returns "" and the cycle goes ahead.
         """
         try:
+            if getattr(dev, "enabled", None) is False:
+                return "the device is disabled in Indigo"
+            err = getattr(dev, "errorState", "")
+            if isinstance(err, str) and err.strip():
+                return f"Indigo reports '{err.strip()}'"
+            # Most network-device plugins publish a reachability state. ShellyDirect and
+            # several others call it deviceOnline; the v2 API can hand it back as the STRING
+            # "False", which is truthy, so it goes through as_bool rather than bool().
+            states = getattr(dev, "states", {}) or {}
+            for key in ("deviceOnline", "online", "reachable"):
+                if key in states:
+                    if as_bool(states[key], default=True):
+                        return ""
+                    return f"its plugin reports {key}=False"
+        except Exception as exc:
+            self.logger.debug(f"[Watchdog] Could not read plug reachability: {exc}")
+        return ""
+
+    def _plug_is_on(self, dev=None):
+        """True / False for the plug's own reported power state, or None if it does not say."""
+        if dev is None:
+            dev = self._plug_device()
+        if dev is None:
+            return None
+        try:
+            states = getattr(dev, "states", {}) or {}
+            if "onOffState" in states:
+                return self._scalar_bool(states["onOffState"])
+            return self._scalar_bool(getattr(dev, "onState", None))
+        except Exception as exc:
+            self.logger.debug(f"[Watchdog] Could not read plug on/off state: {exc}")
+        return None
+
+    @staticmethod
+    def _scalar_bool(value):
+        """True / False for a real on-off value, None for anything that is not one.
+
+        Only bool, int and str are an answer. Anything else — an absent attribute, a proxy
+        object, a device that simply does not model on/off — is "cannot tell", and the caller
+        must not read that as OFF. Getting this wrong turns an unanswerable question into a
+        confident wrong answer, which is the whole fault this version exists to fix.
+        """
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, str)):
+            return as_bool(value, default=False)
+        return None
+
+    def _await_plug_state(self, want, seconds):
+        """Wait for the plug to REPORT `want`. True confirmed, False did not, None cannot tell.
+
+        The device object is re-fetched on every pass — a cached one would report the value it
+        held when the cycle started and confirm anything asked of it.
+
+        StopThread is swallowed rather than raised. This runs inside the restore path of a
+        shutting-down plugin, where the plug is already back on and the real StopThread is
+        halfway up the stack; a second one from here would replace it.
+        """
+        if self._plug_is_on() is None:
+            return None                       # the plug does not report a state to wait for
+        deadline = time.time() + max(0.0, float(seconds))
+        while True:
+            if self._plug_is_on() is want:
+                return True
+            if time.time() >= deadline:
+                return False
+            try:
+                self.sleep(WD_VERIFY_POLL)
+            except self.StopThread:
+                self.logger.debug("[Watchdog] Shutting down mid-verify — state not confirmed")
+                return None
+            except Exception:
+                return None
+
+    def _power_cycle_plug(self):
+        """Switch the gateway plug OFF, wait wd_off_seconds, then back ON — all within this one
+        tick. Returns True if the plug was SEEN to switch off, False if it demonstrably did not,
+        and None if it publishes no on/off state to check.
+
+        A try/finally guarantees the plug is switched back ON even if self.sleep() raises
+        StopThread (plugin shutting down mid-cycle), so the gateway is never stranded without
+        power. Main thread only.
+
+        turnOff()/turnOn() return without error whether or not the command reaches the plug, so
+        the return value above comes from the plug's own reported state, never from the calls
+        completing. See the note by WD_VERIFY_SECONDS.
+        """
+        if self._plug_is_on() is False:
+            self.logger.warning(
+                "[Watchdog] The plug is already OFF — the gateway has no power. "
+                "Switching it back on."
+            )
+        try:
             indigo.device.turnOff(self.wd_plug_id)
-            self.logger.info(f"[Watchdog] Gateway plug OFF for {self.wd_off_seconds}s")
         except Exception as exc:
             self.logger.error(f"[Watchdog] Failed to switch gateway plug off: {exc}")
-            return
+            return False
+
+        # Waiting for the OFF to be reported is part of the off-window, not extra to it.
+        went_off = self._await_plug_state(False, WD_VERIFY_SECONDS)
+        if went_off is False:
+            self.logger.error(
+                f"[Watchdog] The plug did not report switching off within "
+                f"{WD_VERIFY_SECONDS:.0f}s — treating the command as lost, and NOT counting "
+                f"this as a power cycle"
+            )
+        elif went_off is None:
+            self.logger.info(
+                f"[Watchdog] Gateway plug OFF for {self.wd_off_seconds}s "
+                f"(it reports no on/off state, so this is unverified)"
+            )
+        else:
+            self.logger.info(f"[Watchdog] Gateway plug OFF for {self.wd_off_seconds}s")
+
+        if went_off is False:
+            # The OFF never landed, so the plug still has power and there is nothing to wait
+            # out or restore. Send one unverified ON anyway in case the command turns up late
+            # at the owning plugin, and skip the alarm — power was never cut, so the gateway
+            # is not stranded and this is not the emergency NEEDS HELP is for.
+            try:
+                indigo.device.turnOn(self.wd_plug_id)
+            except Exception as exc:
+                self.logger.debug(f"[Watchdog] Best-effort ON after a lost OFF failed: {exc}")
+            return False
+
         try:
             self.sleep(self.wd_off_seconds)
         finally:
             # ALWAYS restore power, even if StopThread was raised during the sleep above.
+            # Power IS cut at this point, so each attempt waits the full verification window:
+            # a plug that will not come back on is exactly the emergency worth blocking the
+            # main loop for.
             restored = False
             for attempt in range(1, 6):
                 try:
                     indigo.device.turnOn(self.wd_plug_id)
-                    self.logger.info("[Watchdog] Gateway plug back ON — gateway rebooting")
-                    restored = True
-                    break
                 except Exception as exc:
                     self.logger.error(
                         f"[Watchdog] Failed to switch gateway plug back on "
                         f"(attempt {attempt}/5): {exc}"
                     )
+                    continue
+                if self._await_plug_state(True, WD_VERIFY_SECONDS) is False:
+                    self.logger.error(
+                        f"[Watchdog] The plug did not report switching back on "
+                        f"(attempt {attempt}/5)"
+                    )
+                    continue
+                self.logger.info("[Watchdog] Gateway plug back ON — gateway rebooting")
+                restored = True
+                break
             if not restored:
                 self._send_watchdog_pushover(
                     "RAMSES watchdog NEEDS HELP",
@@ -1944,6 +2191,7 @@ class Plugin(indigo.PluginBase):
                     "gateway may be without power. Check the plug.",
                     priority="1",
                 )
+        return went_off
 
     def _persist_watchdog_state(self):
         """Persist the daily cycle counters so a graceful reload during an outage doesn't reset
