@@ -1,216 +1,61 @@
-# RAMSES ESP — Indigo Plugin
+# RAMSES ESP for Indigo
 
-**Version:** 1.8.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2025.2 or later
+**See and control your Honeywell Evohome heating from Indigo, locally over radio, with no Honeywell account or cloud.**
 
-An [Indigo Domotics](https://www.indigodomo.com/) plugin for the **RAMSES-ESP** USB gateway, providing local radio control of **Honeywell Evohome** heating systems via the RAMSES-II protocol — no cloud dependency.
+**Version:** 1.8.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
 
-## Overview
+**[Read the full guide](https://highsteads.github.io/RAMSES_ESP/)** — setting up, what everything means, and what to do when something goes wrong.
 
-The RAMSES-ESP is an ESP32-S3 + CC1101 RF USB dongle that bridges the Honeywell Evohome 868 MHz radio network to MQTT. This plugin connects to that MQTT stream and creates native Indigo thermostat devices for each Evohome zone — giving you live temperatures, setpoint control, and zone mode tracking entirely locally.
+---
 
-**Why local?** The Honeywell EU cloud has let us down often enough to stop trusting it. This plugin skips the cloud altogether — if your RAMSES-ESP gateway can hear the TRVs, the plugin works.
+## What it does
 
-## Features
+This plugin lets [Indigo](https://www.indigodomo.com) work with a **Honeywell Evohome** heating system without going through Honeywell's servers. It listens to the radio messages your Evohome controller and radiator valves already send to each other, and sends its own when you change a temperature, so it keeps working when the internet or Honeywell's servers are down.
 
-- **Auto-discovery** — Gateway ID and zone thermostats discovered automatically from the radio message stream
-- **12-zone support** — All Evohome zones created as native Indigo thermostat devices
-- **Live temperatures** — Updated from 30C9 broadcasts (every few minutes)
-- **Setpoint control** — Set heat setpoints via Indigo UI, action groups, schedules, or scripts
-- **Zone modes** — Tracks schedule vs permanent override (from 2349 messages)
-- **Zone names** — Auto-renames devices from Evohome controller (opcode 0004)
-- **RAMSES folder** — All zone devices created inside a dedicated Indigo device folder
-- **Robust MQTT** — Reconnects on its own when the broker restarts, and every device goes offline cleanly when the link drops
-- **Power-cycle watchdog** — If the gateway stays offline, the plugin can cycle the smart plug that powers it (the ramses_esp firmware stops retrying WiFi after a failed reconnect, so only a power cycle recovers it)
-- **No cloud** — Wholly local over MQTT, so it keeps working when the Honeywell EU servers are down
-- **Bundled paho** — paho-mqtt 2.1.0 ships with the plugin, so there is nothing else to install
+- **Creates a thermostat in Indigo for each Evohome zone** by itself, as soon as it hears the zone on the radio, and names it after the zone once the controller sends the name.
+- **Shows each room's temperature and target temperature,** kept up to date from the Evohome controller's own regular broadcasts.
+- **Sets a room's target temperature** from Indigo, a control page, a schedule, a trigger or HomeKit, the same as any other Indigo thermostat. The zone keeps that temperature until something changes it.
+- **Reports on the radiator valves themselves** — the lowest battery in each zone, when a valve was last heard, and whether any has stopped answering — so a dead valve shows up in Indigo rather than as a cold room.
+- **Tells you when the gateway goes offline,** through the Pushover plugin if you have it.
+- **Can switch the gateway off and on again** through a smart plug when it stays offline, and checks that the plug really switched.
 
-## Requirements
+## What it works with
 
-| Requirement | Details |
-|-------------|---------|
-| Indigo | 2025.2 or later (API v3.4+) |
-| Python | 3.13 (bundled with Indigo 2025.2) |
-| Hardware | [RAMSES-ESP](https://github.com/IndaloTech/ramses_esp) USB gateway |
-| MQTT broker | Any (e.g. Mosquitto running locally) |
-| Heating system | Honeywell Evohome with RAMSES-II TRVs |
+| You need | What it is |
+|---|---|
+| **Honeywell Evohome** | The controller and its radiator valves. The plugin handles heating zones, not hot water. |
+| **[RAMSES-ESP gateway](https://github.com/IndaloTech/ramses_esp)** | A small USB stick with a radio receiver tuned to the frequency Evohome uses, and a Wi-Fi chip that passes on everything it hears. It plugs into any USB power supply within radio range of your heating. |
+| **An MQTT broker** | A small program, such as Mosquitto, that passes messages between devices on your network. The gateway posts what it hears there, and the plugin collects it. It can run on the Mac that runs Indigo. |
 
-## Credentials — `IndigoSecrets.py` vs `IndigoSecrets_example.py`
+## Installing
 
-This plugin, like every CliveS Indigo plugin, reads sensitive values from one
-shared master file:
-
-`/Library/Application Support/Perceptive Automation/IndigoSecrets.py`
-
-| File | Purpose | Real data? | Committed to GitHub? |
-|------|---------|------------|----------------------|
-| `IndigoSecrets.py` | Working file the plugin reads at runtime. Keep a backup in a password manager. | YES | **NO** — listed in `.gitignore` |
-| `IndigoSecrets_example.py` | Template only — empty placeholders. Shipped in the plugin bundle. | NO | YES |
-
-If you don't have `IndigoSecrets.py`, copy `IndigoSecrets_example.py` out of
-the plugin bundle into `/Library/Application Support/Perceptive Automation/`,
-rename it to `IndigoSecrets.py`, and fill in your values. Or skip the file
-altogether and type the values into the plugin's configuration dialog — where
-both are set, `IndigoSecrets.py` wins.
-
-If neither source supplies a value the plugin needs, it logs an ERROR naming
-the key and telling you to either fill in the matching field or add the key to
-`IndigoSecrets.py`.
-
-## Installation
-
-1. Go to the [Releases page](https://github.com/Highsteads/RAMSES_ESP/releases) and download `RAMSES_ESP.indigoPlugin.zip`
-2. Unzip — you will get `RAMSES_ESP.indigoPlugin`
+1. Go to the [Releases page](https://github.com/Highsteads/RAMSES_ESP/releases/latest) and download `RAMSES_ESP.indigoPlugin.zip`
+2. Unzip the downloaded file — you will get `RAMSES_ESP.indigoPlugin`
 3. Double-click `RAMSES_ESP.indigoPlugin` — Indigo will install it automatically
-4. In Indigo: **Plugins → Manage Plugins** — enable **RAMSES ESP**
-5. Open **Plugin Config** and enter your MQTT broker details
 
-## Configuration
+## Setting it up
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Broker Host | IP address of your MQTT broker | 192.168.1.x |
-| Broker Port | MQTT port | 1883 |
-| Username | MQTT username (if required) | — |
-| Password | MQTT password (if required) | — |
-| Gateway ID | Auto-filled on first connection | (auto) |
-| Debug Logging | Verbose protocol logging | Off |
+1. Set the gateway up to send to your MQTT broker, as the [guide](https://highsteads.github.io/RAMSES_ESP/getting-started.html) describes.
+2. Open **Plugins → RAMSES ESP → Configure**, fill in **Broker Host** with the broker's network address — the four numbers, such as `192.168.1.10` — and its username and password if it has them, then click **Save**.
+3. Leave **Discovered Gateway ID** empty. The plugin finds the gateway by itself, and a thermostat for each zone appears in a device folder called **RAMSES** as the Evohome controller sends out its readings.
 
-Leave **Gateway ID** blank — the plugin discovers it automatically from the `RAMSES/GATEWAY/+/info` topic within seconds of connecting.
+The [full guide](https://highsteads.github.io/RAMSES_ESP/) goes through each step, explains every setting, and covers what to do if something does not work.
 
-## How It Works
+## What's new
 
-```
-Evohome TRVs  →  868 MHz radio  →  RAMSES-ESP dongle  →  MQTT  →  Plugin  →  Indigo devices
-```
+**v1.8.0** — The power-cycle watchdog checks that the gateway's plug really switched before counting a cycle or sending an alert. If the plug is unreachable too, it does not try, and says the trouble looks like the network rather than a stuck gateway.
 
-The plugin subscribes to `RAMSES/GATEWAY/<gw_id>/rx` and processes four opcodes:
+**v1.7.0** — A radiator valve that was already dead when the plugin started is now reported as silent, instead of reading "Not known yet" for ever. A new setting turns this off for a zone with no radiator valve.
 
-| Opcode | Meaning | Action |
-|--------|---------|--------|
-| `30C9` | Zone current temperature | Updates `temperatureInput1` state |
-| `2309` | Zone setpoint | Updates `setpointHeat` state |
-| `2349` | Zone mode / override | Updates `zoneMode` state |
-| `0004` | Zone name | Renames the Indigo device |
+**v1.6.0** — Each zone reports the battery and health of its own radiator valves, with two new menu items to show what is known and to forget a valve you have replaced.
 
-Setpoint commands are published to `RAMSES/GATEWAY/<gw_id>/tx` as W 2349 permanent-override RAMSES-II packets, so the Evohome schedule and EU cloud cannot cancel them at the next period boundary.
-
-## Device States
-
-Each zone device exposes these states:
-
-| State | Type | Description |
-|-------|------|-------------|
-| `temperatureInput1` | Float | Current zone temperature (degC) — shown in device list |
-| `setpointHeat` | Float | Current heat setpoint (degC) |
-| `zoneMode` | String | `schedule` or `permanent override` |
-| `zoneControllerId` | String | Evohome controller address e.g. `01:091567` |
-| `zoneName` | String | Zone name from Evohome controller |
-| `lastSeen` | String | Timestamp of most recent message |
-| `online` | String | `true` / `false` — the GATEWAY's MQTT link, not the valve |
-| `trvBattery` | Integer | Lowest battery % of the valves in this zone; `-1` until one reports |
-| `trvBatteryWarn` | List | `unknown` / `ok` / `low` — a valve warning about its own battery |
-| `trvStatus` | List | `unknown` / `answering` / `silent` — whether the valves are still answering |
-| `trvLastSeen` | String | When a valve in this zone was last heard |
-| `trvCount` | Integer | How many valves have been heard in this zone |
-| `trvIds` | String | Their RAMSES addresses |
-| `trvSummary` | String | One plain-English sentence about the valves |
-
-## Controlling Setpoints
-
-Use Indigo's native **Set Heat Setpoint** thermostat action — no custom action needed.
-
-From a Python script:
-```python
-dev = indigo.devices[963505712]  # Zone device ID
-indigo.thermostat.setHeatSetpoint(dev, value=21.0)
-```
-
-Or directly via the plugin:
-```python
-plugin = indigo.server.getPlugin("uk.co.clives.ramses.esp")
-plugin.executeAction("requestZoneUpdate", deviceId=dev.id)
-```
-
-## RAMSES-ESP Gateway Setup
-
-The gateway must be configured to connect to your MQTT broker. Via USB serial (115200 baud):
-
-```
-mqtt user <username>
-mqtt password <password>
-mqtt broker mqtt://<broker_ip>:1883
-reset
-```
-
-> **Note:** Use the `mqtt://` URL prefix — bare IP addresses cause a connection failure.
-
-## Logging
-
-Every log line carries a millisecond timestamp `[HH:MM:SS.mmm]`, so you can
-line events up precisely against the other CliveS plugins — Device Activity
-Monitor uses the same format.
-
-To turn the prefix off, or back on, at any time:
-
-**Plugins → RAMSES ESP → Toggle Timestamps in Log (on/off)**
-
-The plugin stores the setting in `pluginPrefs` (`timestampEnabled`) and it
-survives a restart. It defaults to ON.
-
-## Version History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 1.8.0 | 19-Sep-2026 | **The watchdog now checks that the plug actually switched, instead of taking silence for success.** When the gateway goes quiet the plugin cuts power to the smart plug feeding it and turns it straight back on, which is the only way to revive a gateway whose firmware has given up on the WiFi. The trouble was that Indigo never complains about a switch command — it simply passes it to whichever plugin owns the plug and returns — so a command sent to a plug that is not on the network looks exactly like one that worked. On 19 September the WiFi here dropped for about an hour and a half and took the gateway and its plug down together, and the watchdog cut the power three times, told me by push that it had done so twice, used up the whole day's allowance of three, and then announced that it was giving up and the gateway needed a human. Not one of the six commands had reached the plug, nothing was ever switched, and the gateway came back on its own the moment the WiFi did. The plug's own reported state is now the evidence, so a cycle only counts once the plug has been seen to move, and the push saying the gateway was cycled is only sent once that has happened. If the plug cannot be reached the watchdog does not try at all — the plug and the gateway are nearly always on the same network, so an unreachable plug means the trouble is the network rather than a stuck gateway, and it now says that instead of spending the day's allowance on commands that go nowhere. If your plug is a device that does not report its own on and off state there is nothing to check against, and the watchdog carries on cycling it exactly as before. 157 to 179 tests, and all nine deliberate breakages of the new code were caught. |
-| 1.7.0 | 13-Sep-2026 | **A valve that was already dead when the plugin started is now reported, instead of reading as "not known yet" for ever.** Version 1.6.0 added the check that says when a radiator valve has stopped answering, and it turned out to have a hole in it exactly the shape of the problem it was written for. The plugin only looked at zones it had heard a valve in at least once, so a valve that had already gone quiet before the plugin started listening never got onto the list at all, was never judged, and never marked its zone in error — it simply kept the "not known yet" a zone device is given when it is first created, which reads like patience rather than like a fault. This was found on a real one: the Utility Room valve here stopped transmitting on 2 June and was still reading "not known yet" on 13 September, 103 days later, with a perfectly good detector on either side of it and nothing in between, and in the end a person noticed a cold radiator, which is the very thing the check exists to make unnecessary. Every zone that has a device is now judged whether or not a valve has ever been heard in it, and a zone we hold a device for and have never once heard from is reported as silent in the same way as a valve that went quiet while we were listening. The restart grace is unchanged, so a reload still cannot raise a fault about its own downtime. If one of your zones genuinely has no radiator valve in it — underfloor heating, say, or a zone driven by a relay — untick the new "Warn when a zone's valve has never been heard at all" setting, or that zone will report a silent valve for ever and quietly teach you to ignore the warning. 142 to 157 tests, and all five deliberate breakages of the new code were caught. |
-| 1.6.0 | 12-Sep-2026 | **Each zone now reports the battery and the health of its own radiator valves.** Until now a zone said whether the *gateway* was connected, and the controller carries on announcing a zone whether or not the valve in it still answers — so a dead valve stayed invisible until the room went cold, and there was no battery reading for a TRV anywhere in Indigo. Both were already being broadcast and the plugin was throwing them away. A zone reports the lowest battery of its valves, whether any of them is warning about its own battery, when one was last heard, and a plain sentence saying so; the battery also feeds Indigo's own low-battery list, so anything already watching batteries picks it up with no work. Where a zone has two valves everything reports the worse of them, because a zone is only as healthy as its unhappiest valve. **Nothing is guessed.** A valve that has not spoken yet reads "not known yet" rather than "silent", and a battery nobody has reported reads as no reading rather than as flat. A valve is only called silent once it has been heard since the plugin started, or once the plugin has been listening for longer than the silence threshold — otherwise a restart would raise a fault about its own downtime. How long counts as silent, and whether a silent valve marks the zone in error, are both settings. Two new menu items show what is known and let you forget a valve you have replaced. The battery decode itself is untested against this hardware, so anything it does not recognise is reported as no reading rather than as a number. The two three-valued states are named `trvStatus` and `trvBatteryWarn` rather than the more obvious `trvOnline`/`trvBatteryLow` for a reason worth knowing: Indigo will not change an existing state's type, so a state that has ever shipped as a yes/no cannot later be given a third value under the same name — it keeps the old type and the write is refused without a word in any log. 55 → 134 tests, 32 of 32 deliberate breakages caught. |
-| 1.5.2 | 11-Sep-2026 | **The bundle now carries the standard GitHub record.** Indigo plugins can carry a small note inside the bundle saying where their source lives on GitHub, spelt the way the Indigo Domotics and community plugins spell it. This one now has it, pointing at this repository. Nothing else changed. |
-| 1.5.1 | 08-Aug-2026 | **Added the missing support link.** Every Indigo plugin is meant to carry a web address inside its bundle — it is what the "About" item in the Plugins menu opens. This one had the entry but left it blank, so that menu item went nowhere. It now points at this repository. Nothing else changed. |
-| 1.5.0 | 27-Jul-2026 | Moved to paho-mqtt 2.1.0, the current release of the MQTT library. Version 2 requires the callback API version to be stated when the client is built and changes the shape of the connect and disconnect callbacks, so all three moved together — leave any one of them behind and the gateway simply never connects, which on this plugin means twelve heating zones quietly stop updating. Connection failures now report the broker's own wording ("Not authorized") instead of a number looked up in a table that version 2 had made unreachable. Fourteen new tests cover the change, taking the suite to 48. If you are upgrading by hand rather than through the release, delete `Contents/Packages/paho*` first: pip leaves the old copy in place alongside the new one, and the mixture can load the wrong code. |
-| 1.4.1 | 21-Jul-2026 | Housekeeping — a refresh of the shared utility module, with no change to how the plugin behaves. Calling the log timestamp filter twice no longer double-stamps every line, a log call with a mismatched placeholder now shows its arguments instead of dropping them, and the module imports cleanly outside Indigo. |
-| 1.4.0 | 26-Jun-2026 | A thorough multi-agent code review and the plugin's first proper test suite (34 tests covering the protocol decoders, the setpoint encoder, the gateway-id sanitiser and the watchdog). The headline fix is the power-cycle watchdog, which now does its off-and-on inside a single tick with a guaranteed restore, so a plugin reload or a crash mid-cycle can no longer leave the gateway switched off and the heating dead. A gateway that was already offline when the plugin restarts is now correctly seen as offline rather than being read as online, which used to quietly stop the watchdog ever arming. Alongside that, stray RAMSES domain codes no longer create phantom zone devices, an unknown setpoint no longer wipes a good one to zero, a zone marked offline no longer shows as actively heating in HomeKit, and the setpoint floor moved from 5 to 8 degC to match what the Evohome controller actually applies. Plenty of smaller tidying came along for the ride. |
-| 1.3.0 | 12-Jun-2026 | Gateway power-cycle watchdog. If the gateway stays offline beyond a configurable threshold (default 15 minutes), the plugin switches off the Indigo smart plug that powers it, waits a few seconds, and switches it back on. Repeat cycles are spaced a full threshold apart and capped per day (default 3), with Pushover notes on every cycle and a final "needs a human" alert when the cap is reached. Configure it under Plugins -> RAMSES ESP -> Configure. Born of a real incident: a WiFi config change knocked the gateway off the network and the firmware never tried to rejoin (upstream ramses_esp issue #27), so heating data was silently absent for ten days. Also guarded the broker-port preference against non-numeric values. |
-| 1.2.11 | 10-Jun-2026 | Housekeeping — lint clean-up and a continuous-integration check added as part of a fleet-wide audit. No change in behaviour. |
-| 1.2.10 | 25-May-2026 | Housekeeping — the plugin no longer cycles a zone device's communication every time it writes that device's own properties. Zones are discovered from the radio traffic, so a restart had nothing new to pick up. No change in behaviour. |
-| 1.2.9 | 23-May-2026 | Millisecond timestamp `[HH:MM:SS.mmm]` prefix on every `self.logger` line via `plugin_utils.install_timestamp_filter()`; new "Toggle Timestamps in Log" menu item. |
-| 1.2.8 | 13-May-2026 | **Breaking.** The four custom zone states were renamed from `zone_mode`, `zone_controller_id`, `zone_name` and `last_seen` to `zoneMode`, `zoneControllerId`, `zoneName` and `lastSeen`, because Indigo state IDs have to be camel case. Any trigger, control page or script reading the old names has to be updated, and the stored history on existing zone devices is lost. |
-| 1.2.7 | 10-May-2026 | Plugin version is now read dynamically from Info.plist (`self.pluginVersion`) — no separate Python constant. Added bundled `plugin_utils.py` with `log_startup_banner()` invoked in `__init__`, plus `MenuItems.xml` with a Show Plugin Info menu callback. Hardcoded broker IP fallback removed; PluginConfig default cleared. `_read_prefs` now logs ERROR if no broker host is configured in either IndigoSecrets.py or PluginConfig. `IndigoSecrets.py` imports split into per-key try/except so a missing single key doesn't blank the rest. PluginConfig version note refreshed (was stuck at 1.1.8). |
-| 1.2.6 | 05-May-2026 | Add 5-minute delay before sending "gateway offline" Pushover notification — prevents spurious alerts on brief gateway hiccups. Restored alert is only sent if the offline alert actually fired. |
-| 1.2.5 | 08-Apr-2026 | Gateway offline/restored Pushover notifications via Pushover Indigo plugin. |
-| 1.2.4 | 04-Apr-2026 | MQTT broker migrated from .140 to .160 after Home Assistant VM decommission; broker now runs natively on the Indigo Mac. |
-| 1.1.8 | 24-Feb-2026 | Setpoint command log lines downgraded to debug-only; RAMSES ESP entries no longer interleave with EvoHome script output in event log |
-| 1.1.7 | 24-Feb-2026 | Fix HomeKit showing OFF: enable SupportsHvacOperationMode + ShowCoolHeatEquipmentStateUI; re-fetch device after replacePluginPropsOnServer(); add SetHvacMode handler to lock zones to Heat |
-| 1.1.6 | 24-Feb-2026 | Add hvacHeaterIsOn (flame indicator) and hvacOperationMode updates on temp refresh for HomeKit |
-| 1.1.5 | 24-Feb-2026 | Seed zone_name from device name on startup for zones where 0004 has not yet been received |
-| 1.1.4 | 24-Feb-2026 | Send RQ 0004 on startup to populate zone_name states |
-| 1.1.3 | 23-Feb-2026 | Fix Zone 0 controller ID being wiped by direct TRV messages; fix misleading success log after publish failure |
-| 1.1.2 | 23-Feb-2026 | Downgrade pre-NTP gateway timestamp log from WARNING to INFO; remove unhelpful "Check SNTP config" advice (firmware limitation) |
-| 1.1.1 | 23-Feb-2026 | Fix hvacHeaterIsOn state error on new zone device creation |
-| 1.1.0 | 23-Feb-2026 | Migrate zone devices to native Indigo thermostat type; add actionControlThermostat(); remove custom setpoint action |
-| 1.0.5 | 22-Feb-2026 | Fix last_seen epoch timestamp when gateway NTP not synced; fix zone_mode defaulting to "unknown" |
-| 1.0.4 | 22-Feb-2026 | Fix zone name auto-rename; add 0004 opcode parsing |
-| 1.0.3 | 22-Feb-2026 | Zone devices created in "RAMSES" folder; last_seen shows clean local time |
-| 1.0.2 | 22-Feb-2026 | Fix gateway ID corruption when pref value contained concatenated IDs |
-| 1.0.1 | 21-Feb-2026 | Fix MQTT reconnection; add validatePrefsConfigUi() |
-| 1.0.0 | 21-Feb-2026 | Initial release |
-
-## Known Limitations
-
-- **RAMSES-III not supported** — Honeywell's post-2025 firmware speaks a different protocol, which the ramses_rf library does not handle either
-- **SNTP on gateway** — The RAMSES-ESP firmware accepts the `sntp server` command but never writes it to NVS, so timestamps can read as 1970 until the firmware fixes it. The plugin works around this by using local system time
-- **Local Override mode** — If a TRV dial is turned manually, the TRV enters local override and ignores remote setpoint commands until returned to AUTO position
-- **Heat only** — The plugin handles heat zones. It does not do hot water or cooling
-
-## Related Projects
-
-- [ramses_esp](https://github.com/IndaloTech/ramses_esp) — The RAMSES-ESP gateway firmware
-- [ramses_rf](https://github.com/zxdavb/ramses_rf) — Python RAMSES-II protocol library (used by the HA integration)
-- [ramses_cc](https://github.com/ramses-rf/ramses_cc) — Home Assistant integration using ramses_rf
+Every version is listed in the [version history](https://highsteads.github.io/RAMSES_ESP/changelog.html).
 
 ## Acknowledgements
 
-- Protocol details from the [ramses_rf](https://github.com/zxdavb/ramses_rf) project
-- paho-mqtt 2.1.0 bundled from the Eclipse Paho project (EPL-2.0 / EDL-1.0)
+- The radio protocol details come from the [ramses_rf](https://github.com/zxdavb/ramses_rf) project.
+- The gateway firmware is the [ramses_esp](https://github.com/IndaloTech/ramses_esp) project.
+- The plugin talks to the MQTT broker with the Eclipse Paho library (EPL-2.0 / EDL-1.0).
 
 ## Authors & licence
 
