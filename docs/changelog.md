@@ -7,6 +7,16 @@ nav_order: 11
 
 The newest version is at the top.
 
+## 1.9.0 — 27 September 2026
+
+**Each zone now says whether the gateway itself is alive.** The old **Online** state only ever followed the plugin's own connection to the broker, so it went on saying **true** when the gateway died, as long as the broker was still running.
+
+- New state on each zone, **Gateway Status**, which reads **Online**, **Offline** or **Not known**, and follows the gateway rather than the broker.
+- **Online** works as it always has, and is now labelled **Online (broker link)** so nobody takes it for the gateway.
+- The settings save with **Broker Host** left blank when your `IndigoSecrets.py` file gives the broker's address. Before, the dialog would not save at all.
+- The broker's port can now come from `IndigoSecrets.py` too, as `MQTT_PORT`, whenever the file also gives the address.
+- A silent valve's **valve silent** error now stays on the zone until the valve is heard again. Before, the next temperature reading from the controller wiped it, usually within a minute, so Device Health Monitor could easily miss it.
+
 ## 1.8.0 — 19 September 2026
 
 **The watchdog checks that the plug really switched.** Indigo does not report an error when a command to a plug goes nowhere, so the watchdog used to count a command as a power cycle whether or not the plug moved. When my Wi-Fi dropped for about an hour and a half, taking the gateway and its plug down together, the watchdog sent six commands that never reached the plug, reported two cycles that never happened, used up the day's three, and asked for a human — and the gateway came back by itself when the Wi-Fi did.

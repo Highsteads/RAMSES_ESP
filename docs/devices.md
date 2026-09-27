@@ -35,7 +35,8 @@ And these are the plugin's own states, which you can use in triggers and on cont
 | **Zone Name** | The zone's name, as described above. |
 | **Controller ID** | The radio address of your Evohome controller, such as `01:123456`. The plugin needs it before it can send a new temperature. |
 | **Last Seen** | The date and time of the last reading the plugin applied to this zone. |
-| **Online** | **false** when the plugin has lost its connection to the MQTT broker, and **true** again as soon as fresh readings arrive. It does not change when the gateway itself goes quiet, so watch **Last Seen** for that. |
+| **Online (broker link)** | **false** when the plugin has lost its connection to the MQTT broker, and **true** again as soon as fresh readings arrive. It is about the plugin's own connection only, so it stays **true** when the gateway itself dies while the broker is still running. Use **Gateway Status** for the gateway. |
+| **Gateway Status** | **Online** while the RAMSES-ESP gateway is connected, **Offline** once the broker reports it has dropped off, and **Not known** until the gateway has first been heard, or while the plugin itself has lost the broker. Every zone shows the same value, as they all share the one gateway. Use this in a trigger to hear about a dead gateway. |
 
 A zone also carries seven states about its radiator valves — **Valve Status**, **Valve Battery**, **Valve Battery (%)**, **Valve Last Heard**, **Valves In This Zone**, **Valve Addresses** and **Valve Summary**. The [Valve health](valve-health.md) page explains them.
 

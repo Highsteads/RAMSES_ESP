@@ -12,9 +12,11 @@
 	</Field>
 
 	<Field id="mqttSecretsInfo" type="label" fontSize="small" alignWithControl="true">
-		<Label>Broker host, username and password are read from IndigoSecrets.py
-(MQTT_BROKER, MQTT_USERNAME, MQTT_PASSWORD) when present. The values
-below are used as a fallback only.</Label>
+		<Label>Broker host, port, username and password are read from
+IndigoSecrets.py (MQTT_BROKER, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD)
+when present. The values below are used as a fallback only, so Broker
+Host may be left blank when the file names the broker. MQTT_PORT is used
+only when MQTT_BROKER is set in the file too.</Label>
 	</Field>
 
 	<Field id="mqtt_broker_host" type="textfield" defaultValue="">
@@ -42,7 +44,7 @@ below are used as a fallback only.</Label>
 
 	<Field id="gatewayInfo" type="label" fontSize="small" alignWithControl="true">
 		<Label>The gateway ID is discovered automatically by listening on
-RAMSES/GATEWAY/+/info. Once discovered it is saved below.
+RAMSES/GATEWAY/+. Once discovered it is saved below.
 Clear this field and save to force re-discovery on next restart.</Label>
 	</Field>
 

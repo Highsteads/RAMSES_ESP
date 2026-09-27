@@ -5,7 +5,7 @@ nav_order: 6
 
 # Keeping the gateway running
 
-While the gateway is connected, it tells the broker it is online. If it drops off the network, the broker passes on that it has gone offline, and the plugin can act on that in two ways.
+While the gateway is connected, it tells the broker it is online. If it drops off the network, the broker passes on that it has gone offline. Every zone device shows this in its **Gateway Status**, which you can use in your own triggers, and the plugin can act on it in two ways.
 
 ## Alerts on your phone
 

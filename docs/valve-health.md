@@ -33,9 +33,9 @@ On my own HR92 valves, the reading has only ever been 50% or 100%, which suggest
 
 ## When a valve goes silent
 
-When a valve has not been heard for longer than **Report a valve silent after (hours)**, the zone's **Valve Status** changes to **Silent**, the Event Log gets one warning naming the zone, and the device shows **valve silent** as an error in the device list. Anything that watches for devices in error, such as my Device Health Monitor plugin, sees it. When the valve is heard again, the error clears and the log says it is answering again.
+When a valve has not been heard for longer than **Report a valve silent after (hours)**, the zone's **Valve Status** changes to **Silent**, the Event Log gets one warning naming the zone, and the device shows **valve silent** as an error in the device list. Anything that watches for devices in error, such as my Device Health Monitor plugin, sees it. The error stays in place while the zone's temperature and setpoint go on updating, and only clears when the valve is heard again, when the log says it is answering again.
 
-If you would rather not have the device marked in error, untick **Mark the zone device in error when a valve goes silent**. The states still change, but there is no error and no warning in the log.
+If you would rather not have the device marked in error, untick **Mark the zone device in error when a valve goes silent**. The states still change, but there is no error and no warning in the log, and an error already showing clears the next time the zone's valve news changes.
 
 A zone the plugin has a device for, but from which it has never heard a valve at all, is treated the same way once the plugin has been listening for longer than the silence time. That catches a valve that was already dead before the plugin started. If one of your zones has no radiator valve — underfloor heating, say, or a zone driven by a relay — untick **Warn when a zone's valve has never been heard at all**, or that zone will report a silent valve for ever.
 

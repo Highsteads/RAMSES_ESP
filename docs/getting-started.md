@@ -38,7 +38,7 @@ Indigo asks whether to enable the plugin. Say yes.
 
 Open **Plugins → RAMSES ESP → Configure** and fill in:
 
-- **Broker Host** — the broker's network address.
+- **Broker Host** — the broker's network address. Leave it blank if your `IndigoSecrets.py` file already gives it, as the [Settings](settings.md) page explains.
 - **Broker Port** — leave it at 1883 unless you changed it on the broker.
 - **Username (optional)** and **Password (optional)** — only if your broker asks for them.
 

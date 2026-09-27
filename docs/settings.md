@@ -11,8 +11,8 @@ Open these with **Plugins → RAMSES ESP → Configure**. They apply to the whol
 
 | Setting | What it does |
 |---|---|
-| **Broker Host** | The network address of your MQTT broker, such as `192.168.1.10`. The dialog will not save without one. |
-| **Broker Port** | The broker's port number, 1883 to start with. It must be a whole number from 1 to 65535. |
+| **Broker Host** | The network address of your MQTT broker, such as `192.168.1.10`. The dialog will not save without one, unless your `IndigoSecrets.py` file gives the address, as explained below. |
+| **Broker Port** | The broker's port number, 1883 to start with. It must be a whole number from 1 to 65535. You can leave it blank if your `IndigoSecrets.py` file gives both the address and the port. |
 | **Username (optional)** | The broker's username, if it asks for one. |
 | **Password (optional)** | The broker's password, if it asks for one. Leave it blank if the broker does not ask. |
 
@@ -20,17 +20,18 @@ If you change the broker's address or port, the plugin reconnects as soon as you
 
 ### Keeping the broker details in one file
 
-If you run several of my plugins, you can keep the broker's address, username and password in one shared file instead of typing them into each plugin. The file is called `IndigoSecrets.py` and lives in `/Library/Application Support/Perceptive Automation/`.
+If you run several of my plugins, you can keep the broker's address, port, username and password in one shared file instead of typing them into each plugin. The file is called `IndigoSecrets.py` and lives in `/Library/Application Support/Perceptive Automation/`.
 
 A blank copy, `IndigoSecrets_example.py`, comes inside the plugin. Copy it to that folder, rename it `IndigoSecrets.py`, and fill in these lines with your own details:
 
 ```python
 MQTT_BROKER   = "192.168.1.10"
+MQTT_PORT     = 1883
 MQTT_USERNAME = "your username"
 MQTT_PASSWORD = "your password"
 ```
 
-When the file has a value, it is used, whatever the Configure dialog says. The port always comes from the dialog. Because the dialog will not save with **Broker Host** empty, type the broker's address there as well.
+When the file has a value, it is used, whatever the Configure dialog says, and you can leave those boxes in the dialog blank. The port in the file is only used when the file gives the broker's address too. If the address is left blank in the file, everything comes from the dialog, port included, so the 1883 in the blank copy never overrides a port you typed there.
 
 If neither the file nor the dialog gives a broker address, the plugin writes an error to the Event Log and does not connect.
 

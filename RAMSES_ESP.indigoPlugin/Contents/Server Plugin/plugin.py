@@ -5,9 +5,29 @@
 #              Connects to RAMSES-ESP wireless HVAC gateway via MQTT, auto-discovers
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
-# Author:      CliveS & Claude Opus 5
-# Date:        19-09-2026
-# Version:     1.8.0
+# Author:      CliveS & Claude Opus 5, Claude Opus 5.5
+# Date:        27-09-2026
+# Version:     1.9.0
+#
+# v1.9.0 (27-09-2026): THE GATEWAY'S OWN LIVENESS, AND IndigoSecrets FOR THE WHOLE BROKER.
+#   * New zone state `gatewayStatus` (unknown/online/offline) from the gateway's retained
+#     presence message and its LWT. The old `online` state follows THIS plugin's broker link
+#     and stayed "true" when the gateway died with the broker up. It is unchanged in value
+#     (nothing in DeviceHealthMonitor, Dashboards or the Python Scripts reads it) and only
+#     relabelled "Online (broker link)". Written with clearErrorState=False so it can never
+#     wipe the "valve silent" error.
+#   * validatePrefsConfigUi no longer refuses a blank Broker Host when IndigoSecrets.py
+#     supplies MQTT_BROKER, nor a blank port when it supplies MQTT_PORT as well.
+#   * MQTT_PORT is read from IndigoSecrets.py first, but ONLY when MQTT_BROKER is set there:
+#     the shared template ships MQTT_PORT = 1883 beside a blank broker, and letting that win
+#     would override the port of a user who configures the broker in the dialog.
+#   * EVERY ROUTINE STATE WRITE NOW KEEPS THE "valve silent" ERROR. Indigo's state writes
+#     clear a device's error by default, so each controller temperature broadcast (about
+#     once a minute) wiped the error _write_trv_states had just set, and Device Health
+#     Monitor rarely saw it. All batch writes go through `_write_states` (batch with
+#     clearErrorState=False, falling back to single documented writes if Indigo refuses
+#     the argument), single writes pass clearErrorState=False, and only the valve code
+#     sets or clears the error. With reporting switched off it takes back its own error.
 #
 # v1.8.0 (19-09-2026): THE WATCHDOG NOW PROVES THE PLUG MOVED, INSTEAD OF ASSUMING IT.
 # `indigo.device.turnOff()` and `turnOn()` are fire and forget: Indigo hands the command to
@@ -258,6 +278,10 @@ try:
 except ImportError:
     MQTT_BROKER = ""
 try:
+    from IndigoSecrets import MQTT_PORT
+except ImportError:
+    MQTT_PORT = ""
+try:
     from IndigoSecrets import MQTT_USERNAME
 except ImportError:
     MQTT_USERNAME = ""
@@ -345,6 +369,16 @@ MAX_ZONES              = 12
 
 # Device folder name — all zone devices are created inside this Indigo folder
 DEVICE_FOLDER_NAME     = "RAMSES"
+
+# Zone state `gatewayStatus`: whether the RAMSES-ESP GATEWAY itself is alive, from the
+# retained presence message it publishes ("online") and its MQTT last will ("offline").
+# Deliberately separate from the older `online` state, which follows THIS plugin's link to
+# the broker and so stays "true" when the gateway dies with the broker still up. Three
+# values because "we cannot tell" is a real answer: before the first presence message, or
+# while our own broker link is down and nothing from the gateway can reach us.
+GATEWAY_STATUS_UNKNOWN = "unknown"
+GATEWAY_STATUS_ONLINE  = "online"
+GATEWAY_STATUS_OFFLINE = "offline"
 
 # Main thread polling interval
 MAIN_LOOP_SLEEP        = 5.0           # seconds
@@ -517,6 +551,12 @@ class Plugin(indigo.PluginBase):
         self._trv_saved_at    = 0.0
         # Set in startup(); a valve cannot be called silent for a stretch nobody heard.
         self._trv_listening_since = time.time()
+        # Whether Indigo accepts clearErrorState on a BATCH state write. None until the
+        # first write finds out; see _write_states.
+        self._batch_keeps_error = None
+        # Last gatewayStatus WRITTEN per zone device ID, so an unchanged value costs no
+        # Indigo call on each 5-second pass.
+        self._gw_status_written = {}
 
     # --------------------------------------------------------------------------
 
@@ -563,7 +603,7 @@ class Plugin(indigo.PluginBase):
                     if derived.endswith(" Radiator"):
                         derived = derived[:-len(" Radiator")]
                     try:
-                        dev.updateStatesOnServer([{"key": "zoneName", "value": derived}])
+                        self._write_states(dev, [{"key": "zoneName", "value": derived}])
                         self.logger.info(f"    zoneName seeded from device name: '{derived}'")
                     except Exception as exc:
                         self.logger.warning(f"    Could not seed zoneName for '{dev.name}': {exc}")
@@ -655,6 +695,13 @@ class Plugin(indigo.PluginBase):
         # Power-cycle watchdog — recover a gateway that stays offline
         self._watchdog_tick(offline_since)
 
+        # Whether the gateway itself is alive, onto every zone device. Cheap: a value
+        # that has not moved writes nothing.
+        try:
+            self._publish_gateway_status()
+        except Exception as exc:
+            self.logger.debug(f"Gateway status pass failed: {exc}")
+
         # Per-valve liveness + battery. Cheap: a summary that has not moved writes nothing.
         try:
             self._publish_trv_states()
@@ -721,16 +768,22 @@ class Plugin(indigo.PluginBase):
     def validatePrefsConfigUi(self, values_dict):
         errors_dict = indigo.Dict()
 
-        port_str = values_dict.get("mqtt_broker_port", "1883").strip()
-        try:
-            port = int(port_str)
-            if not (1 <= port <= 65535):
-                errors_dict["mqtt_broker_port"] = "Port must be between 1 and 65535"
-        except ValueError:
-            errors_dict["mqtt_broker_port"] = "Port must be a whole number"
+        # Host and port may be left blank when IndigoSecrets.py supplies them, because
+        # _read_prefs reads the file first and these fields only as a fallback. Refusing
+        # a blank field there made the dialog unsaveable for anyone using the file.
+        port_str = str(values_dict.get("mqtt_broker_port", "1883")).strip()
+        if port_str or self._secret_broker_port() is None:
+            try:
+                port = int(port_str)
+                if not (1 <= port <= 65535):
+                    errors_dict["mqtt_broker_port"] = "Port must be between 1 and 65535"
+            except ValueError:
+                errors_dict["mqtt_broker_port"] = "Port must be a whole number"
 
-        if not values_dict.get("mqtt_broker_host", "").strip():
-            errors_dict["mqtt_broker_host"] = "Broker host is required"
+        if not str(values_dict.get("mqtt_broker_host", "")).strip() and not MQTT_BROKER:
+            errors_dict["mqtt_broker_host"] = (
+                "Broker host is required (or set MQTT_BROKER in IndigoSecrets.py)"
+            )
 
         # Validate and auto-correct the gateway ID field.
         # Valid format: NN:NNNNNN (e.g. "18:203052"). Empty = auto-discover.
@@ -860,7 +913,7 @@ class Plugin(indigo.PluginBase):
             # Ensure hvacOperationMode is always Heat.
             # Indigo defaults this to Off (0) which makes HomeKit and other integrations
             # show the device as "OFF". Evohome zones are heat-only — always in Heat mode.
-            dev.updateStatesOnServer([{"key": "hvacOperationMode",
+            self._write_states(dev, [{"key": "hvacOperationMode",
                                        "value": indigo.kHvacMode.Heat}])
         except Exception as exc:
             self.logger.warning(f"deviceStartComm: could not set thermostat props for '{dev.name}': {exc}")
@@ -892,7 +945,7 @@ class Plugin(indigo.PluginBase):
                 seed.append({"key": "trvBattery", "value": TRV_BATTERY_UNKNOWN,
                              "uiValue": "unknown"})
             if seed:
-                dev.updateStatesOnServer(seed)
+                self._write_states(dev, seed)
         except Exception as exc:
             self.logger.warning(f"deviceStartComm: could not seed valve states for '{dev.name}': {exc}")
 
@@ -960,7 +1013,7 @@ class Plugin(indigo.PluginBase):
                         f"- Evohome zones are heat-only; mode stays Heat"
                     )
                 try:
-                    dev.updateStatesOnServer([
+                    self._write_states(dev, [
                         {"key": "hvacOperationMode", "value": indigo.kHvacMode.Heat},
                     ])
                 except Exception as exc:
@@ -1016,7 +1069,7 @@ class Plugin(indigo.PluginBase):
 
         # Optimistic UI update — actual confirmation arrives in next 30C9/2309 broadcast
         try:
-            dev.updateStatesOnServer([
+            self._write_states(dev, [
                 {"key": "setpointHeat", "value": setpoint_c,
                  "uiValue": f"{setpoint_c:.1f} degC"},
             ])
@@ -1702,7 +1755,7 @@ class Plugin(indigo.PluginBase):
             )
 
             ts_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            new_dev.updateStatesOnServer([
+            self._write_states(new_dev, [
                 {"key": "temperatureInput1", "value": 0.0,          "uiValue": "0.00 degC"},
                 {"key": "setpointHeat",      "value": 0.0,          "uiValue": "0.00 degC"},
                 # hvacHeaterIsOn is NOT set here: it's a built-in thermostat state that Indigo
@@ -1760,7 +1813,7 @@ class Plugin(indigo.PluginBase):
             # address and must not overwrite a valid stored ID with an empty string.
             if controller_id:
                 state_updates.append({"key": "zoneControllerId", "value": controller_id})
-            dev.updateStatesOnServer(state_updates)
+            self._write_states(dev, state_updates)
             if self.debug:
                 self.logger.debug(f"Zone {zone_idx} temp -> {temp_c:.2f}degC")
         except Exception as exc:
@@ -1794,7 +1847,7 @@ class Plugin(indigo.PluginBase):
             ]
             if controller_id:
                 state_updates.append({"key": "zoneControllerId", "value": controller_id})
-            dev.updateStatesOnServer(state_updates)
+            self._write_states(dev, state_updates)
             if self.debug:
                 self.logger.debug(f"Zone {zone_idx} setpoint -> {setpoint_c:.2f}degC")
         except Exception as exc:
@@ -1827,7 +1880,7 @@ class Plugin(indigo.PluginBase):
                                          "uiValue": f"{setpoint_c:.2f} degC"})
             if controller_id:
                 state_updates.append({"key": "zoneControllerId", "value": controller_id})
-            dev.updateStatesOnServer(state_updates)
+            self._write_states(dev, state_updates)
             if self.debug:
                 self.logger.debug(f"Zone {zone_idx} mode -> {mode_str}")
         except Exception as exc:
@@ -1843,12 +1896,78 @@ class Plugin(indigo.PluginBase):
         if dev is None:
             return
         try:
-            dev.updateStatesOnServer([
+            self._write_states(dev, [
                 {"key": "online",         "value": "false"},
                 {"key": "hvacHeaterIsOn", "value": False},
             ])
         except Exception as exc:
             self.logger.error(f"Error setting Zone {zone_idx} offline: {exc}")
+
+    def _write_states(self, dev, states):
+        """Write a batch of states WITHOUT touching the device's error state.
+
+        Indigo's state writes clear a device's error by default. The only error this
+        plugin sets is "valve silent", owned by _write_trv_states, and a routine zone
+        write — a controller temperature broadcast about once a minute — used to wipe it
+        within the minute, so Device Health Monitor rarely saw it. Every write except the
+        valve code's own setErrorStateOnServer now leaves the error alone.
+
+        The official docs show clearErrorState only on the single-state
+        updateStateOnServer. The batch call is tried with it first, because one batch is
+        one SQL Logger row where single writes are one row each; if Indigo refuses the
+        argument (TypeError), the states go one at a time through the documented form,
+        and that choice is remembered.
+        """
+        if self._batch_keeps_error is not False:
+            try:
+                dev.updateStatesOnServer(states, clearErrorState=False)
+                self._batch_keeps_error = True
+                return
+            except TypeError:
+                if self._batch_keeps_error is True:
+                    raise   # it has worked before, so this TypeError is a real fault
+                self._batch_keeps_error = False
+                self.logger.info(
+                    "Indigo does not accept clearErrorState on a batch state write - "
+                    "writing zone states one at a time so a valve error is kept"
+                )
+        for item in states:
+            extra = {k: item[k] for k in ("uiValue", "decimalPlaces") if k in item}
+            dev.updateStateOnServer(item["key"], item["value"],
+                                    clearErrorState=False, **extra)
+
+    @staticmethod
+    def _gateway_status(mqtt_connected, gateway_online):
+        """The gatewayStatus word from what we know. Our own broker link comes first:
+        with it down nothing the gateway says can reach us, so any verdict is stale."""
+        if not mqtt_connected or gateway_online is None:
+            return GATEWAY_STATUS_UNKNOWN
+        return GATEWAY_STATUS_ONLINE if gateway_online else GATEWAY_STATUS_OFFLINE
+
+    def _publish_gateway_status(self):
+        """Write gatewayStatus to each zone device whose written value is out of date.
+
+        Written with clearErrorState=False: a zone may be carrying the "valve silent"
+        error that Device Health Monitor reads, and a gateway-status write must never
+        be the thing that wipes it.
+        """
+        with self.pending_lock:
+            gateway_online = self.gateway_online
+        value = self._gateway_status(self.mqtt_connected, gateway_online)
+        with self.zone_lock:
+            dev_ids = list(self.zone_devices.values())
+        for dev_id in dev_ids:
+            if self._gw_status_written.get(dev_id) == value:
+                continue
+            try:
+                dev = indigo.devices[dev_id]
+            except KeyError:
+                continue
+            try:
+                dev.updateStateOnServer("gatewayStatus", value, clearErrorState=False)
+                self._gw_status_written[dev_id] = value
+            except Exception as exc:
+                self.logger.debug(f"Could not write gatewayStatus on '{dev.name}': {exc}")
 
     def _send_gateway_alert(self, status):
         """Send Pushover notification for gateway offline/restored. Called from main thread only."""
@@ -2246,7 +2365,7 @@ class Plugin(indigo.PluginBase):
             # Always store the zone name as a device state
             current_stored = dev.states.get("zoneName", "")
             if current_stored != name:
-                dev.updateStatesOnServer([{"key": "zoneName", "value": name}])
+                self._write_states(dev, [{"key": "zoneName", "value": name}])
                 self.logger.info(f"Zone {zone_idx} name state set to '{name}'")
 
             # Rename the Indigo device only if it still has the auto-generated name
@@ -2550,8 +2669,9 @@ class Plugin(indigo.PluginBase):
     def _write_trv_states(self, dev, summary, now):
         """Write one zone's valve states, then its error state.
 
-        The error state is set LAST on purpose: updateStatesOnServer CLEARS a device's
-        error by default, so setting it first would have the very next write wipe it.
+        This is the ONLY code that sets or clears the zone's error. Every other state
+        write goes through _write_states with clearErrorState=False (1.9.0), so the
+        error now lasts until a valve verdict changes it. The error is still set last.
         """
         states = [
             {"key": "trvCount",   "value": summary["count"]},
@@ -2572,7 +2692,7 @@ class Plugin(indigo.PluginBase):
         else:
             states.append({"key": "trvBattery", "value": int(summary["battery"]),
                            "uiValue": f"{int(summary['battery'])}%"})
-        dev.updateStatesOnServer(states)
+        self._write_states(dev, states)
 
         # Mirror into Indigo's OWN battery level so the device list, find_low_battery and
         # every notifier that reads it see the valve without knowing this plugin exists.
@@ -2586,11 +2706,19 @@ class Plugin(indigo.PluginBase):
                     props["SupportsBatteryLevel"] = True
                     dev.replacePluginPropsOnServer(props)
                     dev = indigo.devices[dev.id]
-                dev.updateStateOnServer("batteryLevel", int(summary["battery"]))
+                dev.updateStateOnServer("batteryLevel", int(summary["battery"]),
+                                        clearErrorState=False)
             except Exception as exc:
                 self.logger.debug(f"Could not mirror batteryLevel for '{dev.name}': {exc}")
 
         if not self.trv_report_faults:
+            # Routine writes no longer clear the error, so with reporting switched off
+            # we must take back one we set earlier, or it would stay for ever.
+            if getattr(dev, "errorState", "") == "valve silent":
+                try:
+                    dev.setErrorStateOnServer("")
+                except Exception as exc:
+                    self.logger.debug(f"Could not clear error state on '{dev.name}': {exc}")
             return
         if summary["online"] is False:
             try:
@@ -2628,7 +2756,14 @@ class Plugin(indigo.PluginBase):
             return max(lo, min(hi, val))
 
         self.broker_host     = MQTT_BROKER   or prefs.get("mqtt_broker_host", "").strip()
-        self.broker_port     = _as_int("mqtt_broker_port", 1883, 1, 65535)
+        # Same order as the host: IndigoSecrets.py first, the dialog as the fallback.
+        secret_port = self._secret_broker_port()
+        if MQTT_BROKER and secret_port is None and str(MQTT_PORT).strip() not in ("", "0"):
+            self.logger.warning(
+                f"MQTT_PORT in IndigoSecrets.py is not a port number ({MQTT_PORT!r}) — "
+                "using the Broker Port from Configure instead"
+            )
+        self.broker_port     = secret_port or _as_int("mqtt_broker_port", 1883, 1, 65535)
         self.broker_username = MQTT_USERNAME or prefs.get("mqtt_username",    "").strip()
         self.broker_password = MQTT_PASSWORD or prefs.get("mqtt_password",    "").strip()
         self.debug           = bool(prefs.get("debug_logging",   False))
@@ -2693,6 +2828,35 @@ class Plugin(indigo.PluginBase):
                 )
             except Exception as exc:
                 self.logger.warning(f"Could not save sanitised gateway ID: {exc}")
+
+    @staticmethod
+    def _port_from_secret(raw):
+        """IndigoSecrets.MQTT_PORT as a usable port, or None when it is unset or unusable.
+
+        The template ships it as the int 1883, but a hand-edited file may hold a string,
+        so both are accepted. Blank, 0 and anything outside 1-65535 mean "not supplied"
+        and the caller falls back to the dialog.
+        """
+        if isinstance(raw, bool):
+            return None
+        try:
+            port = int(str(raw).strip())
+        except (ValueError, TypeError):
+            return None
+        return port if 1 <= port <= 65535 else None
+
+    @classmethod
+    def _secret_broker_port(cls):
+        """The port IndigoSecrets.py supplies, or None to use the dialog's.
+
+        Read only when the file also names the broker. The shared template ships
+        MQTT_PORT = 1883 with MQTT_BROKER blank, and a blank broker means "configure me
+        in the dialog" — letting the template's port win there would override the port
+        a user typed for their own broker.
+        """
+        if not MQTT_BROKER:
+            return None
+        return cls._port_from_secret(MQTT_PORT)
 
     # --------------------------------------------------------------------------
     # Menu callbacks

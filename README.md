@@ -2,7 +2,7 @@
 
 **See and control your Honeywell Evohome heating from Indigo, locally over radio, with no Honeywell account or cloud.**
 
-**Version:** 1.8.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
+**Version:** 1.9.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
 
 **[Read the full guide](https://highsteads.github.io/RAMSES_ESP/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -43,11 +43,11 @@ The [full guide](https://highsteads.github.io/RAMSES_ESP/) goes through each ste
 
 ## What's new
 
+**v1.9.0** — Each zone has a new **Gateway Status** that says whether the gateway itself is alive, which the old **Online** never could. A silent valve's error now stays on the zone until the valve is heard again, instead of being wiped by the next temperature reading. The settings also save with the broker's address left blank when `IndigoSecrets.py` gives it, and the port can come from that file too.
+
 **v1.8.0** — The power-cycle watchdog checks that the gateway's plug really switched before counting a cycle or sending an alert. If the plug is unreachable too, it does not try, and says the trouble looks like the network rather than a stuck gateway.
 
 **v1.7.0** — A radiator valve that was already dead when the plugin started is now reported as silent, instead of reading "Not known yet" for ever. A new setting turns this off for a zone with no radiator valve.
-
-**v1.6.0** — Each zone reports the battery and health of its own radiator valves, with two new menu items to show what is known and to forget a valve you have replaced.
 
 Every version is listed in the [version history](https://highsteads.github.io/RAMSES_ESP/changelog.html).
 

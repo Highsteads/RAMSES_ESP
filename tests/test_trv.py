@@ -371,11 +371,11 @@ class TestPluginWiring:
         assert note < first_parse, "note the sender before decoding what it said"
 
     def test_the_error_state_is_set_after_the_state_writes(self):
-        """updateStatesOnServer CLEARS a device error by default, so order is the fix."""
+        """Belt and braces since 1.9.0: the writes keep the error, and still come first."""
         src = ast.dump(self.funcs["_write_trv_states"])
-        assert "updateStatesOnServer" in src and "setErrorStateOnServer" in src
+        assert "_write_states" in src and "setErrorStateOnServer" in src
         lines = ast.unparse(self.funcs["_write_trv_states"]).splitlines()
-        last_write = max(i for i, l in enumerate(lines) if "updateStatesOnServer" in l)
+        last_write = max(i for i, l in enumerate(lines) if "_write_states" in l)
         first_err  = min(i for i, l in enumerate(lines) if "setErrorStateOnServer" in l)
         assert last_write < first_err
 
@@ -561,18 +561,25 @@ class FakeDev:
         self.single = []           # updateStateOnServer calls
         self.errors = []           # setErrorStateOnServer calls
         self.prop_writes = 0
+        self.errorState = ""
 
-    def updateStatesOnServer(self, states):
+    # Like Indigo, a state write CLEARS the device's error unless told not to.
+    def updateStatesOnServer(self, states, clearErrorState=True):
         self.written.append({s["key"]: s["value"] for s in states})
         for s in states:
             self.states[s["key"]] = s["value"]
+        if clearErrorState:
+            self.errorState = ""
 
-    def updateStateOnServer(self, key, value):
+    def updateStateOnServer(self, key, value, clearErrorState=True, **_kw):
         self.single.append((key, value))
         self.states[key] = value
+        if clearErrorState:
+            self.errorState = ""
 
     def setErrorStateOnServer(self, msg):
         self.errors.append(msg)
+        self.errorState = msg
 
     def replacePluginPropsOnServer(self, props):
         self.pluginProps = dict(props)

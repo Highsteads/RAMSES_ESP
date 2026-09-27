@@ -57,11 +57,31 @@ The device address is the zone index (0-11).</Label>
 				<ControlPageLabel>Last Seen</ControlPageLabel>
 			</State>
 
-			<!-- MQTT connectivity flag: "true" or "false" -->
+			<!-- "true" or "false". THIS PLUGIN'S link to the MQTT broker: "false" when that
+			     link drops, "true" again with the next zone message. It does NOT follow the
+			     RAMSES-ESP gateway, and stays "true" when the gateway dies while the broker is
+			     up. Kept as it is because it has shipped; use gatewayStatus below for the
+			     gateway itself. -->
 			<State id="online">
 				<ValueType>String</ValueType>
-				<TriggerLabel>Online status changed</TriggerLabel>
-				<ControlPageLabel>Online</ControlPageLabel>
+				<TriggerLabel>Online (broker link) changed</TriggerLabel>
+				<ControlPageLabel>Online (broker link)</ControlPageLabel>
+			</State>
+
+			<!-- Whether the RAMSES-ESP GATEWAY is alive, from its own retained presence
+			     message ("online") and its MQTT last will ("offline"). "unknown" before the
+			     first presence message, and while this plugin's own broker link is down.
+			     Three-valued for the same reason as trvStatus below. Added in 1.9.0. -->
+			<State id="gatewayStatus">
+				<ValueType>
+					<List>
+						<Option value="unknown">Not known</Option>
+						<Option value="online">Online</Option>
+						<Option value="offline">Offline</Option>
+					</List>
+				</ValueType>
+				<TriggerLabel>Gateway status changed</TriggerLabel>
+				<ControlPageLabel>Gateway Status</ControlPageLabel>
 			</State>
 
 			<!-- === The VALVES in this zone ===============================

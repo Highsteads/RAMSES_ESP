@@ -71,9 +71,13 @@ Either no valve in that zone has been heard yet, or the plugin restarted recentl
 
 No valve in that zone has sent a battery report yet. Valves send one only now and then, so give it time.
 
-## Online shows "false"
+## Online (broker link) shows "false"
 
-The plugin lost its connection to the MQTT broker. It reconnects by itself, and **Online** goes back to **true** with the next reading.
+The plugin lost its connection to the MQTT broker. It reconnects by itself, and **Online (broker link)** goes back to **true** with the next reading.
+
+## Gateway Status shows "Offline"
+
+The broker has reported that the gateway dropped off the network. **Online (broker link)** can still read **true** at the same time, because the plugin's own connection to the broker is fine. Check the gateway's power and your Wi-Fi, or let the [power-cycle watchdog](gateway-watchdog.md) deal with it.
 
 ## I got a "RAMSES Gateway Offline" alert
 
