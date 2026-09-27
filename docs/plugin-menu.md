@@ -1,6 +1,6 @@
 ---
 title: The plugin menu
-nav_order: 9
+nav_order: 10
 ---
 
 # The plugin menu

@@ -37,6 +37,8 @@ The plugin takes a zone's temperature only from the controller. Each radiator va
 
 Every message a radiator valve sends, whatever it is about, tells the plugin that valve is still alive. That is what the [valve health](valve-health.md) states are built from.
 
+The plugin also listens to the boiler relay, which reports whether it is closed, and to the controller's two figures for how much heat it wants. Those make up the [Boiler Relay](boiler-relay.md) device.
+
 ## Setting a temperature
 
 When you set a zone's temperature from Indigo, the plugin sends it as a **permanent override**. The zone keeps that temperature until something changes it, and the Evohome schedule does not change it back at the next schedule change. The plugin has no action to put a zone back on its schedule, so do that on the Evohome controller.

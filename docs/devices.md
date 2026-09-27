@@ -42,6 +42,8 @@ A zone also carries seven states about its radiator valves — **Valve Status**,
 
 A brand-new device shows 0.00 for its temperature and setpoint until its first real reading arrives.
 
+The plugin also creates one device for the boiler relay, which the [Your boiler](boiler-relay.md) page describes.
+
 ## Deleting a zone device
 
 If you delete a zone device, the plugin creates it again the next time it hears a reading for that zone.

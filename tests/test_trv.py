@@ -555,6 +555,7 @@ class FakeDev:
         self.id = dev_id
         self.name = name
         self.address = "0"
+        self.deviceTypeId = "ramsesZoneThermostat"
         self.states = dict(states or {})
         self.pluginProps = dict(props or {})
         self.written = []          # every state batch, in order

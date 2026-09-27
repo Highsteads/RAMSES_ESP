@@ -7,7 +7,27 @@
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5, Claude Opus 5.5
 # Date:        27-09-2026
-# Version:     1.9.0
+# Version:     1.10.0
+#
+# v1.10.0 (27-09-2026): THE BOILER RELAY, AND WHEN THE BOILER IS CALLED FOR HEAT.
+#   * New device type `ramsesBoilerRelay`, created the first time a relay (13:) is heard.
+#     A native on/off sensor: onOffState is ON while the relay is closed. States:
+#     relayStatus (unknown/on/off), relayAnswering (unknown/answering/silent), relaySummary,
+#     relayLastChanged, relayLastHeard, relayAddress, heatDemand and relayDemand (the
+#     controller's 3150 and 0008 for the FC domain, -1 until reported).
+#   * Decoding lives in the new ramses_relay.py (no indigo import). Packets measured live on
+#     27-09-2026: the BDR91 sends 3B00 00C8 then 3EF0 0000FF; the controller sends 3B00 FCC8,
+#     3150 FC00 and 0008 FC00. 3EF0 byte 1 is the level, 0 open, 200 closed.
+#   * A switch time is only claimed from a switch SEEN; the first report after installing
+#     sets the state and leaves relayLastChanged blank.
+#   * Silence (RELAY_SILENT_MINUTES) sets the error "relay silent" and warns once; the clock
+#     starts at plugin start so a restart cannot invent a fault.
+#   * Demand is written only when exactly one relay exists: the traffic does not say which
+#     of several relays fires the boiler.
+#   * lastHeard on its own is written at most every RELAY_HEARD_WRITE_EVERY seconds, so a
+#     relay that reports every few minutes does not add an SQL Logger row each time.
+#   * deviceStartComm and deviceDeleted branch on deviceTypeId, so the relay never gets
+#     thermostat capability props or valve seeds.
 #
 # v1.9.0 (27-09-2026): THE GATEWAY'S OWN LIVENESS, AND IndigoSecrets FOR THE WHOLE BROKER.
 #   * New zone state `gatewayStatus` (unknown/online/offline) from the gateway's retained
@@ -326,6 +346,20 @@ from ramses_trv import (            # noqa: E402
     unheard_summary,
 )
 
+# The boiler relay (BDR91) and the controller's boiler demand. Same reason as above:
+# no indigo import, so the decode is testable without a gateway.
+from ramses_relay import (          # noqa: E402
+    OPCODE_ACTUATOR_STATE,
+    OPCODE_HEAT_DEMAND,
+    OPCODE_RELAY_DEMAND,
+    controller_source,
+    parse_boiler_demand,
+    parse_relay_state,
+    relay_is_closed,
+    relay_source,
+)
+from ramses_relay import describe as describe_relay   # noqa: E402
+
 # ==============================================================================
 # CONSTANTS
 # ==============================================================================
@@ -421,6 +455,21 @@ TRV_BATTERY_UNKNOWN     = -1           # a percentage nobody has measured
 # not reach, logged all six commands as successful, sent two Pushovers saying it had cycled
 # the gateway, spent the whole daily cap and then asked for a human. Every claim was false.
 # So the plug's own reported state is the evidence, never the absence of an exception.
+# --- The boiler relay (BDR91) ---------------------------------------------------
+# One device per relay heard on the air, holding whether it is calling the boiler for heat.
+# Native sensor type, so onOffState gives Indigo's own on/off icon, "turns on" triggers and
+# SQL Logger history. See ramses_relay.py for the packets and their decoding.
+RELAY_TYPE_ID            = "ramsesBoilerRelay"
+RELAY_DEVICE_NAME        = "Boiler Relay"
+# MEASURED 27-09-2026: the BDR91 sent 3EF0 at 11:48:09 and again at 11:58:09 - every ten
+# minutes, one report per heating cycle, whether the boiler is running or not. An hour is
+# six missed reports in a row, which one lost packet or a busy moment cannot reach.
+RELAY_SILENT_MINUTES     = 60
+RELAY_HEARD_WRITE_EVERY  = 600          # seconds; lastHeard alone is written no more often
+RELAY_DEMAND_UNKNOWN     = -1           # a percentage nobody has reported
+RELAY_ERROR_TEXT         = "relay silent"
+RELAY_TS_FORMAT          = "%Y-%m-%d %H:%M:%S"
+
 WD_VERIFY_SECONDS      = 8.0           # how long to wait for the plug to report the new state
 WD_VERIFY_POLL         = 0.5           # seconds between reads while waiting
 
@@ -558,6 +607,21 @@ class Plugin(indigo.PluginBase):
         # Indigo call on each 5-second pass.
         self._gw_status_written = {}
 
+        # Boiler relay. The MQTT thread records what the relay and the controller said,
+        # under relay_lock; the main thread turns that into device states. The DEVICE owns
+        # "when it last switched" (relayLastChanged), because it survives a restart and
+        # this dict does not.
+        self.relay_lock     = threading.Lock()
+        self.relay_heard    = {}     # {addr: {"heard": ts, "level": pct|None, "level_ts": ts}}
+        self.boiler_demand  = {"heat": None, "relay": None}   # FC domain, whole percent
+        self.relay_devices  = {}     # {addr: indigo_dev_id}; guarded by relay_lock
+        self._relay_written = {}     # {dev_id: last states written}, so unchanged costs nothing
+        self._relay_heard_written = {}   # {dev_id: ts of the last lastHeard written}
+        self._relay_warned  = set()  # dev ids already warned about as silent
+        self._relay_listening_since = time.time()
+        self._relay_demand_note = False   # said once that demand cannot be attributed
+        self._relay_pass_error  = None    # last relay-pass fault warned about
+
     # --------------------------------------------------------------------------
 
     def startup(self):
@@ -612,6 +676,11 @@ class Plugin(indigo.PluginBase):
                 self.logger.warning(f"  Could not restore zone device '{dev.name}': {exc}")
 
         self.logger.info(f"  Restored {restored} existing zone device(s)")
+        for dev in indigo.devices.iter(f"self.{RELAY_TYPE_ID}"):
+            with self.relay_lock:
+                self.relay_devices[dev.address] = dev.id
+        # Silence is only meaningful once we have listened for longer than it takes.
+        self._relay_listening_since = time.time()
         # Valve records are restored, but the clock that decides whether SILENCE means
         # anything starts NOW — nothing can be called silent for a stretch when this
         # plugin was not listening to it.
@@ -710,6 +779,16 @@ class Plugin(indigo.PluginBase):
                 self._trv_saved_at = time.time()
         except Exception as exc:
             self.logger.debug(f"Valve tracking pass failed: {exc}")
+
+        # The boiler relay. Cheap: states that have not moved write nothing.
+        try:
+            self._publish_relay_states()
+        except Exception as exc:
+            # Said once per distinct fault: a DEBUG line would hide a relay device that
+            # quietly stopped updating, which is the one thing this feature exists to show.
+            if str(exc) != self._relay_pass_error:
+                self._relay_pass_error = str(exc)
+                self.logger.warning(f"Boiler relay update failed: {exc}")
 
         # Apply zone name updates (store state + auto-rename device)
         for zone_idx, name in zone_names.items():
@@ -863,6 +942,9 @@ class Plugin(indigo.PluginBase):
 
     def deviceStartComm(self, dev):
         super(Plugin, self).deviceStartComm(dev)
+        if dev.deviceTypeId == RELAY_TYPE_ID:
+            self._start_relay_device(dev)
+            return
         # Force Indigo to re-read Devices.xml state list. This is required
         # whenever <State> IDs in Devices.xml change (e.g. v1.2.8 snake_case
         # -> camelCase rename). Without this, existing devices keep their
@@ -965,6 +1047,14 @@ class Plugin(indigo.PluginBase):
 
     def deviceDeleted(self, dev):
         """Remove the device from the zone_devices index when deleted by the user."""
+        if dev.deviceTypeId == RELAY_TYPE_ID:
+            with self.relay_lock:
+                if self.relay_devices.get(dev.address) == dev.id:
+                    del self.relay_devices[dev.address]
+            self._relay_written.pop(dev.id, None)
+            self._relay_heard_written.pop(dev.id, None)
+            self.logger.info(f"Boiler relay {dev.address} device deleted from index")
+            return
         try:
             zone_idx = int(dev.address)
             with self.zone_lock:
@@ -1447,6 +1537,8 @@ class Plugin(indigo.PluginBase):
             # Done before the opcode dispatch so an opcode this plugin does not decode
             # still counts — liveness is about the sender, not the subject.
             self._note_trv_packet(fields, payload_hex, opcode)
+            # Same principle for the boiler relay, and the controller's boiler demand.
+            self._note_relay_packet(fields, payload_hex, opcode)
 
             if opcode == OPCODE_ZONE_NAME:
                 self._parse_opcode_0004(fields, payload_hex, ts)
@@ -1488,6 +1580,39 @@ class Plugin(indigo.PluginBase):
                 self._trv_state_dirty = True
         except Exception as exc:
             self.logger.debug(f"Could not note TRV packet: {exc}")
+
+    def _note_relay_packet(self, fields, payload_hex, opcode):
+        """Record what the boiler relay and the controller said about the boiler.
+
+        MQTT thread: touches only relay_heard / boiler_demand, under relay_lock, and makes
+        no Indigo call. Any packet from a relay proves it is alive; only a 3EF0 says
+        whether it is closed. Wrapped whole so it can never cost the zone decode.
+        """
+        try:
+            now = time.time()
+            addr = relay_source(fields)
+            if addr is not None:
+                level = parse_relay_state(payload_hex) if opcode == OPCODE_ACTUATOR_STATE else None
+                with self.relay_lock:
+                    rec = self.relay_heard.setdefault(
+                        addr, {"heard": None, "level": None, "level_ts": None})
+                    rec["heard"] = now
+                    if level is not None:
+                        rec["level"] = level
+                        rec["level_ts"] = now
+                if opcode == OPCODE_ACTUATOR_STATE:
+                    self.logger.debug(f"3EF0: relay {addr} level={level} ({payload_hex})")
+                return
+            if controller_source(fields) and opcode in (OPCODE_HEAT_DEMAND, OPCODE_RELAY_DEMAND):
+                pct = parse_boiler_demand(payload_hex)
+                if pct is None:
+                    return
+                key = "heat" if opcode == OPCODE_HEAT_DEMAND else "relay"
+                with self.relay_lock:
+                    self.boiler_demand[key] = pct
+                self.logger.debug(f"{opcode}: boiler {key} demand {pct}%")
+        except Exception as exc:
+            self.logger.debug(f"Could not note relay packet: {exc}")
 
     def _parse_temp_bytes(self, payload_hex, byte_offset):
         """
@@ -2736,6 +2861,231 @@ class Plugin(indigo.PluginBase):
                 dev.setErrorStateOnServer("")
             except Exception as exc:
                 self.logger.debug(f"Could not clear error state on '{dev.name}': {exc}")
+
+    # --------------------------------------------------------------------------
+    # The boiler relay  (main thread only, except where noted)
+    # --------------------------------------------------------------------------
+
+    def _start_relay_device(self, dev):
+        """deviceStartComm for a boiler relay: native on/off sensor props, honest seeds."""
+        with self.relay_lock:
+            self.relay_devices[dev.address] = dev.id
+        try:
+            props = dev.pluginProps
+            wanted = {"SupportsOnState": True, "SupportsSensorValue": False,
+                      "SupportsStatusRequest": False, "AllowOnStateChange": False}
+            if any(props.get(k) != v for k, v in wanted.items()):
+                props.update(wanted)
+                dev.replacePluginPropsOnServer(props)
+            dev.stateListOrDisplayStateIdChanged()
+            dev = indigo.devices[dev.id]
+        except Exception as exc:
+            self.logger.warning(f"deviceStartComm: could not set relay props for '{dev.name}': {exc}")
+        try:
+            seed = []
+            fresh = not dev.states.get("relayStatus")
+            if fresh:
+                seed.append({"key": "relayStatus", "value": "unknown"})
+            if not dev.states.get("relayAnswering"):
+                seed.append({"key": "relayAnswering", "value": "unknown"})
+            if not dev.states.get("relaySummary"):
+                seed.append({"key": "relaySummary",
+                             "value": describe_relay(None, None, None, False, time.time())})
+            if dev.states.get("relayAddress") != dev.address:
+                seed.append({"key": "relayAddress", "value": dev.address})
+            # Only on a brand-new device: Indigo creates an Integer as 0, and 0% is also a
+            # real demand, so a later start cannot tell the two apart.
+            for key in (("heatDemand", "relayDemand") if fresh else ()):
+                seed.append({"key": key, "value": RELAY_DEMAND_UNKNOWN, "uiValue": "unknown"})
+            if seed:
+                self._write_states(dev, seed)
+        except Exception as exc:
+            self.logger.warning(f"deviceStartComm: could not seed relay states for '{dev.name}': {exc}")
+
+    def _create_relay_device(self, addr, first):
+        """Create the device for a relay heard on the air. Main thread only."""
+        name = RELAY_DEVICE_NAME if first else f"{RELAY_DEVICE_NAME} {addr}"
+        try:
+            indigo.devices[name]
+            name = f"{RELAY_DEVICE_NAME} {addr}"   # the plain name is already taken
+        except KeyError:
+            pass
+        self.logger.info(f"Auto-creating boiler relay device '{name}' for {addr}")
+        try:
+            new_dev = indigo.device.create(
+                protocol=indigo.kProtocol.Plugin,
+                address=addr,
+                name=name,
+                deviceTypeId=RELAY_TYPE_ID,
+                props={"SupportsOnState": True, "SupportsSensorValue": False,
+                       "SupportsStatusRequest": False, "AllowOnStateChange": False},
+                folder=self._get_or_create_folder(DEVICE_FOLDER_NAME),
+            )
+        except Exception as exc:
+            self.logger.error(f"Failed to create the boiler relay device for {addr}: {exc}")
+            return None
+        with self.relay_lock:
+            self.relay_devices[addr] = new_dev.id
+        return new_dev
+
+    @staticmethod
+    def _parse_relay_ts(text):
+        """A relayLastHeard / relayLastChanged state back into epoch seconds, or None."""
+        try:
+            return datetime.strptime(str(text), RELAY_TS_FORMAT).timestamp()
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _relay_decision(cls, prev, rec, demand, now, listening_since):
+        """The states a relay device should hold. Pure: no Indigo call, no clock read.
+
+        prev             the device's current states (dict-like)
+        rec              what the relay has said since this plugin started, or None
+        demand           {"heat": pct|None, "relay": pct|None}, or None when it cannot be
+                         attributed to this relay (more than one relay on the system)
+        listening_since  when this plugin started listening
+
+        Returns (states, silent). "When it last switched" is only ever claimed from a switch
+        actually SEEN: the first report after a restart, or after installation, sets the
+        state without inventing a time for it.
+        """
+        window = RELAY_SILENT_MINUTES * 60.0
+        heard_live = rec.get("heard") if rec else None
+        level      = rec.get("level") if rec else None
+        closed     = relay_is_closed(level)
+
+        prev_status = prev.get("relayStatus") or "unknown"
+        if closed is None:
+            status = prev_status if prev_status in ("on", "off") else "unknown"
+        else:
+            status = "on" if closed else "off"
+
+        changed_text = prev.get("relayLastChanged") or ""
+        if closed is not None and prev_status in ("on", "off") and status != prev_status:
+            changed_text = datetime.fromtimestamp(rec["level_ts"]).strftime(RELAY_TS_FORMAT)
+
+        listened_long = (now - listening_since) > window
+        silent = listened_long and (heard_live is None or now - heard_live > window)
+        if silent:
+            answering = "silent"
+        elif heard_live is not None:
+            answering = "answering"
+        else:
+            answering = prev.get("relayAnswering") or "unknown"
+
+        heard_ts = heard_live if heard_live is not None else cls._parse_relay_ts(prev.get("relayLastHeard"))
+        heard_text = (datetime.fromtimestamp(heard_ts).strftime(RELAY_TS_FORMAT)
+                      if heard_ts is not None else (prev.get("relayLastHeard") or ""))
+
+        known = {"on": True, "off": False}.get(status)
+        states = {
+            "relayStatus":      status,
+            "relayAnswering":   answering,
+            "relayLastHeard":   heard_text,
+            "relayLastChanged": changed_text,
+            "relaySummary":     describe_relay(known, cls._parse_relay_ts(changed_text),
+                                               heard_ts, silent, now),
+        }
+        if known is not None:
+            states["onOffState"] = known
+        if demand is not None:
+            for key, src in (("heatDemand", "heat"), ("relayDemand", "relay")):
+                if demand.get(src) is not None:
+                    states[key] = demand[src]
+        return states, silent
+
+    def _publish_relay_states(self):
+        """Create relay devices as relays are heard, and write their states on change."""
+        now = time.time()
+        with self.relay_lock:
+            heard   = {a: dict(r) for a, r in self.relay_heard.items()}
+            demand  = dict(self.boiler_demand)
+            devices = dict(self.relay_devices)
+
+        for addr in sorted(heard):
+            if addr not in devices:
+                new_dev = self._create_relay_device(addr, first=not devices)
+                if new_dev is not None:
+                    devices[addr] = new_dev.id
+
+        # Demand is the controller's, for the FC (heat source) domain. With one relay on
+        # the system that relay IS the boiler; with more, nothing here says which one is,
+        # so the demand is not written rather than put on the wrong device.
+        attribute = len(devices) == 1
+        if not attribute and devices and not self._relay_demand_note:
+            self._relay_demand_note = True
+            self.logger.info(f"{len(devices)} relays heard - boiler demand is not shown on "
+                             "any of them, because the radio traffic does not say which "
+                             "one fires the boiler")
+
+        for addr, dev_id in devices.items():
+            try:
+                dev = indigo.devices[dev_id]
+            except KeyError:
+                with self.relay_lock:
+                    if self.relay_devices.get(addr) == dev_id:
+                        del self.relay_devices[addr]
+                continue
+            if not dev.enabled:
+                continue
+            states, silent = self._relay_decision(
+                dev.states, heard.get(addr), demand if attribute else None,
+                now, self._relay_listening_since)
+            self._write_relay_states(dev, states, silent, now)
+
+    def _write_relay_states(self, dev, states, silent, now):
+        """Write what changed, then the error state. The only code that sets or clears
+        the relay's error. lastHeard on its own is written at most every ten minutes, so
+        a relay reporting every few minutes does not add an SQL Logger row each time."""
+        batch = []
+        heard_only = True
+        for key, value in states.items():
+            if dev.states.get(key) == value:
+                continue
+            if key != "relayLastHeard":
+                heard_only = False
+            item = {"key": key, "value": value}
+            if key in ("heatDemand", "relayDemand"):
+                item["uiValue"] = "unknown" if value == RELAY_DEMAND_UNKNOWN else f"{value}%"
+            batch.append(item)
+        if batch and heard_only and \
+                now - self._relay_heard_written.get(dev.id, 0.0) < RELAY_HEARD_WRITE_EVERY:
+            batch = []
+        if batch:
+            self._write_states(dev, batch)
+            if any(i["key"] == "relayLastHeard" for i in batch):
+                self._relay_heard_written[dev.id] = now
+            if "onOffState" in states and any(i["key"] == "onOffState" for i in batch):
+                self.logger.info(f"{dev.name}: {states['relaySummary']}")
+
+        if silent:
+            if getattr(dev, "errorState", "") != RELAY_ERROR_TEXT:
+                try:
+                    dev.setErrorStateOnServer(RELAY_ERROR_TEXT)
+                except Exception as exc:
+                    self.logger.debug(f"Could not set error state on '{dev.name}': {exc}")
+            if dev.id not in self._relay_warned:
+                self._relay_warned.add(dev.id)
+                self.logger.warning(f"{dev.name}: {states['relaySummary']}")
+        else:
+            if getattr(dev, "errorState", "") == RELAY_ERROR_TEXT:
+                try:
+                    dev.setErrorStateOnServer("")
+                except Exception as exc:
+                    self.logger.debug(f"Could not clear error state on '{dev.name}': {exc}")
+            if dev.id in self._relay_warned:
+                self._relay_warned.discard(dev.id)
+                self.logger.info(f"{dev.name}: heard from again.")
+
+    def actionControlSensor(self, action, dev):
+        """A relay device is read-only: Evohome switches the relay, not Indigo."""
+        if action.sensorAction == indigo.kSensorAction.RequestStatus:
+            self.logger.info(f"{dev.name}: {dev.states.get('relaySummary', '')}. "
+                             "The relay reports on its own every few minutes.")
+        else:
+            self.logger.warning(f"{dev.name} cannot be switched from Indigo - the Evohome "
+                                "controller decides when the boiler runs.")
 
     def _read_prefs(self):
         """Load MQTT settings and gateway ID from plugin preferences.

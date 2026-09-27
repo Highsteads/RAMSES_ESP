@@ -2,7 +2,7 @@
 
 **See and control your Honeywell Evohome heating from Indigo, locally over radio, with no Honeywell account or cloud.**
 
-**Version:** 1.9.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
+**Version:** 1.10.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
 
 **[Read the full guide](https://highsteads.github.io/RAMSES_ESP/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -16,6 +16,7 @@ This plugin lets [Indigo](https://www.indigodomo.com) work with a **Honeywell Ev
 - **Shows each room's temperature and target temperature,** kept up to date from the Evohome controller's own regular broadcasts.
 - **Sets a room's target temperature** from Indigo, a control page, a schedule, a trigger or HomeKit, the same as any other Indigo thermostat. The zone keeps that temperature until something changes it.
 - **Reports on the radiator valves themselves** — the lowest battery in each zone, when a valve was last heard, and whether any has stopped answering — so a dead valve shows up in Indigo rather than as a cold room.
+- **Shows when the boiler is being called for heat,** from the Evohome boiler relay (BDR91), as an on/off device with the controller's heat demand alongside.
 - **Tells you when the gateway goes offline,** through the Pushover plugin if you have it.
 - **Can switch the gateway off and on again** through a smart plug when it stays offline, and checks that the plug really switched.
 
@@ -42,6 +43,8 @@ This plugin lets [Indigo](https://www.indigodomo.com) work with a **Honeywell Ev
 The [full guide](https://highsteads.github.io/RAMSES_ESP/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v1.10.0** — A new **Boiler Relay** device shows when Evohome is calling the boiler for heat, by listening to the boiler relay (BDR91). It is an on/off sensor, so triggers and graphs can follow it, and it carries the controller's heat demand alongside. It says so if the relay goes quiet for an hour.
 
 **v1.9.0** — Each zone has a new **Gateway Status** that says whether the gateway itself is alive, which the old **Online** never could. A silent valve's error now stays on the zone until the valve is heard again, instead of being wiped by the next temperature reading. The settings also save with the broker's address left blank when `IndigoSecrets.py` gives it, and the port can come from that file too.
 

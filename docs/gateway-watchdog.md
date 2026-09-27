@@ -1,6 +1,6 @@
 ---
 title: Keeping the gateway running
-nav_order: 6
+nav_order: 7
 ---
 
 # Keeping the gateway running

@@ -58,6 +58,8 @@ def _make_indigo_stub():
         SetHvacMode=4, RequestStatusAll=5, RequestSetpoints=6,
         RequestTemperatures=7, RequestMode=8, RequestEquipmentState=9)
     ind.kProtocol      = types.SimpleNamespace(Plugin="plugin")
+    ind.kSensorAction  = types.SimpleNamespace(
+        TurnOff=0, TurnOn=1, Toggle=2, RequestStatus=3)
     ind.kStateImageSel = MagicMock()
 
     ind.server       = MagicMock()

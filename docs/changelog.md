@@ -1,11 +1,20 @@
 ---
 title: Version history
-nav_order: 11
+nav_order: 12
 ---
 
 # Version history
 
 The newest version is at the top.
+
+## 1.10.0 — 27 September 2026
+
+**Indigo can now see when the boiler is being called for heat.** Evohome fires the boiler through a wireless relay, usually a BDR91, and the plugin now listens to it. See [Your boiler](boiler-relay.md).
+
+- A new **Boiler Relay** device appears in the **RAMSES** folder the first time the relay is heard. It is an on/off sensor: **on** while the relay is closed and the controller is calling for heat.
+- It shows how much heat the controller wants, when the relay last switched, and a one-line summary such as *Calling the boiler for heat since 7:05am*.
+- If the relay is not heard for an hour, the device says **Silent**, takes the error **relay silent**, and the Event Log says so once.
+- The device is read-only. Evohome decides when the boiler runs.
 
 ## 1.9.0 — 27 September 2026
 

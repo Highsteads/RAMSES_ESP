@@ -1,6 +1,6 @@
 ---
 title: Actions and triggers
-nav_order: 7
+nav_order: 8
 ---
 
 # Actions and triggers
@@ -29,6 +29,8 @@ The plugin has no triggers of its own. Instead, use Indigo's **Device State Chan
 - **Valve Status** becomes **Silent** — a radiator valve has stopped answering.
 - **Valve Battery** becomes **Battery low** — a valve is warning about its battery.
 - **Zone Mode** changes — a zone has gone on to, or come off, a permanent override.
+
+On the **Boiler Relay** device, Indigo's own **Sensor turns on** and **Sensor turns off** triggers follow the boiler being called for heat, and **Relay Status** becoming **Silent** means the relay has not been heard for an hour.
 
 ## From a script
 

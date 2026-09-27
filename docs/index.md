@@ -17,6 +17,7 @@ The gateway does not talk to Indigo directly. It posts each message to an **MQTT
 - **Shows each room's temperature and target temperature,** kept up to date from the controller's own regular broadcasts.
 - **Sets a room's target temperature** from Indigo, a control page, a schedule, a trigger or HomeKit, the same as any other Indigo thermostat.
 - **Reports on the radiator valves themselves** — their battery, when each was last heard, and whether any has stopped answering — so a dead valve shows up in Indigo rather than as a cold room.
+- **Shows when the boiler is being called for heat,** by listening to the Evohome boiler relay, so a trigger or a graph can follow it.
 - **Tells you when the gateway goes offline,** through the Pushover plugin if you have it.
 - **Can switch the gateway off and on again** through a smart plug when it stays offline, because a gateway that has lost its Wi-Fi does not always find its own way back.
 
@@ -30,6 +31,7 @@ I run it on my own twelve-zone Evohome system.
 | Know what each zone device shows in Indigo | [Your zones](devices.md) |
 | Understand what the plugin is doing behind the scenes | [How it works](how-it-works.md) |
 | Keep an eye on the radiator valves' batteries | [Valve health](valve-health.md) |
+| See when the boiler is called for heat | [Your boiler](boiler-relay.md) |
 | Have the plugin restart a stuck gateway | [Keeping the gateway running](gateway-watchdog.md) |
 | Change temperatures from triggers, schedules and scripts | [Actions and triggers](actions-and-triggers.md) |
 | Know what every setting does | [Settings](settings.md) |
