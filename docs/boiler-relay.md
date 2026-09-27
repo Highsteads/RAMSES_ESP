@@ -13,7 +13,7 @@ You never add this device yourself. The plugin creates it the first time it hear
 
 It is an ordinary Indigo on/off sensor. It shows **on** while the relay is closed and the controller is calling for heat, and **off** while it is open. That gives it Indigo's usual on and off icons, and a trigger can use **turns on** and **turns off** like any other sensor.
 
-The relay reports its state every ten minutes, so a short spell of heating can show up a few minutes late.
+The relay announces a switch the moment it happens, so the device changes within a few seconds. In a test on 27 September 2026 the relay reported closing one second after the controller asked for heat, and opening one second after it stopped, and Indigo showed each within five seconds.
 
 It is read-only. The Evohome controller decides when the boiler runs, so turning the device on or off from Indigo does nothing except say so in the Event Log.
 
@@ -37,7 +37,7 @@ The controller sends the two demand figures about every twenty minutes, and they
 
 ## When the relay goes quiet
 
-The relay reports every ten minutes, whether the boiler is running or not. If it has not been heard for an hour, the plugin marks it **Silent**, sets the device's error state to **relay silent**, and says so once in the Event Log. Device Health Monitor and anything else that watches error states will see it. The error clears as soon as the relay is heard again.
+As well as announcing each switch, the relay repeats its state every ten minutes, whether the boiler is running or not. If it has not been heard for an hour, the plugin marks it **Silent**, sets the device's error state to **relay silent**, and says so once in the Event Log. Device Health Monitor and anything else that watches error states will see it. The error clears as soon as the relay is heard again.
 
 The hour only starts counting when the plugin starts, so a restart never makes a working relay look silent.
 
