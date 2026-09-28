@@ -36,6 +36,13 @@ The device address is the zone index (0-11).</Label>
 				<ControlPageLabel>Zone Mode</ControlPageLabel>
 			</State>
 
+			<!-- When a temporary override ends, "YYYY-MM-DD HH:MM"; blank for any other mode -->
+			<State id="zoneOverrideUntil">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Override End changed</TriggerLabel>
+				<ControlPageLabel>Override Ends</ControlPageLabel>
+			</State>
+
 			<!-- Evohome controller device address e.g. 01:091567 -->
 			<State id="zoneControllerId">
 				<ValueType>String</ValueType>

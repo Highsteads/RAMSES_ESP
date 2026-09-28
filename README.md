@@ -2,7 +2,7 @@
 
 **See and control your Honeywell Evohome heating from Indigo, locally over radio, with no Honeywell account or cloud.**
 
-**Version:** 1.11.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
+**Version:** 1.12.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
 
 **[Read the full guide](https://highsteads.github.io/RAMSES_ESP/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -43,6 +43,8 @@ This plugin lets [Indigo](https://www.indigodomo.com) work with a **Honeywell Ev
 The [full guide](https://highsteads.github.io/RAMSES_ESP/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v1.12.0** — A new **Set Temperature for a While** action sets a zone for a number of minutes, after which Evohome puts it back on its own timetable by itself, so a stopped Indigo hands the house back to Evohome. A new **Override Ends** state shows when that will be.
 
 **v1.11.0** — A gateway that stays connected but passes on no radio messages is now treated as offline, so the alert and the watchdog act on it. A new setpoint shows only once Evohome reports it back, and is sent again until it does. Only your own controller's messages count, so the valves' own reports no longer flick a setpoint back.
 

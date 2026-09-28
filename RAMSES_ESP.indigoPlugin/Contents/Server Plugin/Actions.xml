@@ -1,6 +1,24 @@
 <?xml version="1.0"?>
 <Actions>
 
+	<!-- Set a zone's temperature for a number of minutes (a temporary override): when
+	     the time runs out, Evohome puts the zone back on its own timetable by itself. -->
+	<Action id="setTemporarySetpoint" deviceFilter="self.ramsesZoneThermostat" uiPath="DeviceActions">
+		<Name>Set Temperature for a While</Name>
+		<CallbackMethod>action_set_temporary_setpoint</CallbackMethod>
+		<ConfigUI>
+			<Field id="setpoint" type="textfield" defaultValue="20">
+				<Label>Temperature (degrees C):</Label>
+			</Field>
+			<Field id="minutes" type="textfield" defaultValue="120">
+				<Label>For how many minutes:</Label>
+			</Field>
+			<Field id="help" type="label" fontSize="small" alignWithControl="true">
+				<Label>Between 10 minutes and 24 hours. When the time runs out, Evohome puts the zone back on its own timetable. Useful for an automation: if Indigo stops, the house goes back to the timetable instead of holding this temperature for ever.</Label>
+			</Field>
+		</ConfigUI>
+	</Action>
+
 	<!-- Request immediate zone update from controller.
 	     The setZoneSetpoint custom action has been replaced by Indigo's built-in
 	     thermostat Set Heat Setpoint action (via actionControlThermostat callback). -->

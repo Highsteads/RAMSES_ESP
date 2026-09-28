@@ -14,6 +14,10 @@ A zone answers Indigo's standard thermostat actions, wherever you use them — t
 
 Each one sends the zone a permanent override, which it keeps until something changes it. The temperature is kept between 8 °C and 35 °C. The [How it works](how-it-works.md) page says more.
 
+## Setting a temperature for a while
+
+The plugin's **Set Temperature for a While** action, on a zone, sets it to the temperature you give for the number of minutes you give, from 10 minutes to 24 hours. When the time runs out, Evohome puts the zone back on its own timetable by itself, with nothing needed from Indigo. That makes it the safer choice for an automation: if Indigo stops, the house goes back to the timetable instead of holding the last temperature it was sent. My EvoHome Heating Controller plugin uses it and renews it each hour.
+
 A new temperature can only be sent once the plugin has found the gateway, is connected to the broker, and has heard at least one reading from the Evohome controller. If any of those is missing, the Event Log says which, and nothing is sent.
 
 Actions for cooling, fans and changing the mode do nothing, because Evohome zones only heat. A request to switch a zone off, from HomeKit say, is ignored and the zone stays in Heat.
@@ -28,7 +32,8 @@ The plugin has no triggers of its own. Instead, use Indigo's **Device State Chan
 
 - **Valve Status** becomes **Silent** — a radiator valve has stopped answering.
 - **Valve Battery** becomes **Battery low** — a valve is warning about its battery.
-- **Zone Mode** changes — a zone has gone on to, or come off, a permanent override.
+- **Zone Mode** changes — a zone has gone on to, or come off, an override.
+- **Override Ends** changes — a timed override has been set or renewed, or has run out.
 
 On the **Boiler Relay** device, Indigo's own **Sensor turns on** and **Sensor turns off** triggers follow the boiler being called for heat, and **Relay Status** becoming **Silent** means the relay has not been heard for an hour.
 

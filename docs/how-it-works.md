@@ -43,7 +43,7 @@ The plugin also listens to the boiler relay, which reports whether it is closed,
 
 ## Setting a temperature
 
-When you set a zone's temperature from Indigo, the plugin sends it as a **permanent override**. The zone keeps that temperature until something changes it, and the Evohome schedule does not change it back at the next schedule change. The plugin has no action to put a zone back on its schedule, so do that on the Evohome controller.
+When you set a zone's temperature from Indigo, the plugin sends it as a **permanent override**. The zone keeps that temperature until something changes it, and the Evohome schedule does not change it back at the next schedule change. The plugin has no action to put a zone back on its schedule, so do that on the Evohome controller. For a temperature that should lapse by itself, use **Set Temperature for a While**: it sends a **temporary override** with an end time, and when that passes Evohome puts the zone back on its timetable. I tested that on my own controller, and its clock ran about a minute fast, so an override may end a minute early.
 
 A temperature is always kept between 8 °C and 35 °C. The Evohome controller will not go below about 8 °C, so the plugin does not either, which keeps Indigo showing the same figure the controller uses.
 

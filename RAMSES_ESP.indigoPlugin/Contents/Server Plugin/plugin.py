@@ -6,8 +6,15 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5, Claude Opus 5.5
-# Date:        28-09-2026 17:10
-# Version:     1.11.0
+# Date:        28-09-2026 19:50
+# Version:     1.12.0
+#
+# v1.12.0 (28-09-2026): TEMPORARY OVERRIDES. Device action setTemporarySetpoint (props
+#   setpoint, minutes 10-1440) sends W 2349 013 mode 04 with an until time (minute, hour,
+#   day, month, year16 - ramses_rf ZoneMode13BPayload); Evohome lapses the zone to its
+#   timetable at that time. PROVEN LIVE on 01:091567 (lapsed 19:21:01 for 19:22 - the
+#   controller clock runs ~1 min fast). zoneMode names modes 00-04; new state
+#   zoneOverrideUntil from the 13-byte 2349. Resends carry the same until. (Claude Opus 5.5)
 #
 # v1.11.0 (28-09-2026): before the heating returns. A gateway connected to MQTT but passing
 #   on no radio frames for 15 min is DEAF: gatewayStatus offline, alert + watchdog armed
@@ -295,7 +302,7 @@ import json
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import os as _os
 import sys as _sys
@@ -403,7 +410,26 @@ TEMP_SCALE             = 100.0         # raw int / TEMP_SCALE = degrees C
 
 # Zone mode codes (byte 3 of 2349 payload)
 ZONE_MODE_SCHEDULE     = 0x00          # following schedule
+ZONE_MODE_ADVANCED     = 0x01          # advanced override (until the next switch point)
 ZONE_MODE_PERMANENT    = 0x02          # permanent override
+ZONE_MODE_COUNTDOWN    = 0x03          # countdown override (for a number of minutes)
+ZONE_MODE_TEMPORARY    = 0x04          # temporary override (until a date and time)
+
+# A temporary override holds the setpoint until a time, then the zone goes back to the
+# Evohome timetable by itself. PROVEN LIVE 28-09-2026 on controller 01:091567: a W 2349
+# 013 with mode 04 was echoed at once, and when it ran out the controller broadcast
+# I 2349 007 ...00FFFFFF (schedule) with the timetable setpoint. The lapse came at
+# 19:21:01 for an until of 19:22, so this controller's clock runs about a minute fast.
+TEMP_OVERRIDE_MIN_MINUTES = 10
+TEMP_OVERRIDE_MAX_MINUTES = 24 * 60
+TEMP_OVERRIDE_DEFAULT_MINUTES = 120
+ZONE_MODE_NAMES = {
+    ZONE_MODE_SCHEDULE:  "schedule",
+    ZONE_MODE_ADVANCED:  "advanced override",
+    ZONE_MODE_PERMANENT: "permanent override",
+    ZONE_MODE_COUNTDOWN: "countdown override",
+    ZONE_MODE_TEMPORARY: "temporary override",
+}
 
 # Indigo device type ID (must match Devices.xml)
 DEVICE_TYPE_ID         = "ramsesZoneThermostat"
@@ -1201,7 +1227,7 @@ class Plugin(indigo.PluginBase):
         except Exception as exc:
             self.logger.error(f"Error in actionControlThermostat for '{dev.name}': {exc}")
 
-    def _validate_and_publish_setpoint(self, dev, setpoint_c, action_str):
+    def _validate_and_publish_setpoint(self, dev, setpoint_c, action_str, until=None):
         """
         Clamp setpoint to valid range and publish a W 2349 permanent override.
 
@@ -1241,13 +1267,13 @@ class Plugin(indigo.PluginBase):
 
         setpoint_c = round(max(SETPOINT_MIN_C, min(float(setpoint_c), SETPOINT_MAX_C)), 2)
         zone_idx   = int(dev.address)
-        published  = self._publish_setpoint(zone_idx, setpoint_c)
+        published  = self._publish_setpoint(zone_idx, setpoint_c, until)
 
         if not published:
             # _publish_setpoint already logged the specific error; nothing more to do
             return
 
-        self._note_setpoint_sent(zone_idx, setpoint_c, time.time())
+        self._note_setpoint_sent(zone_idx, setpoint_c, time.time(), until)
 
         # Debug only: the EvoHome script already logs the room action at INFO level.
         # Suppress at INFO to keep the Indigo event log clean during normal operation.
@@ -1258,6 +1284,40 @@ class Plugin(indigo.PluginBase):
     # --------------------------------------------------------------------------
     # Custom Actions (defined in Actions.xml)
     # --------------------------------------------------------------------------
+
+    def action_set_temporary_setpoint(self, plugin_action, dev=None, callerWaitingForResult=None):
+        """Set a zone's temperature for a number of minutes, after which Evohome puts the
+        zone back on its own timetable by itself.
+
+        For an automation (EvoHomeControl renews it each hour) this is the safe way to
+        hold a setpoint: if Indigo, this plugin or the automation stops, the house goes
+        back to the timetable instead of holding the last command for ever, which is what
+        a permanent override does. Call with executeAction("setTemporarySetpoint",
+        deviceId=<zone>, props={"setpoint": "20.5", "minutes": "120"}) - the deviceId is
+        required, as for any device action.
+        """
+        if dev is None:
+            try:
+                dev = indigo.devices[int(plugin_action.deviceId)]
+            except Exception:
+                self.logger.error("Set Temporary Setpoint: no zone device given")
+                return
+        props = plugin_action.props or {}
+        try:
+            setpoint_c = float(str(props.get("setpoint", "")).strip())
+        except (ValueError, TypeError):
+            self.logger.error(f"Set Temporary Setpoint for '{dev.name}': the setpoint "
+                              f"'{props.get('setpoint', '')}' is not a number")
+            return
+        try:
+            minutes = int(float(str(props.get("minutes", TEMP_OVERRIDE_DEFAULT_MINUTES)).strip()))
+        except (ValueError, TypeError):
+            minutes = TEMP_OVERRIDE_DEFAULT_MINUTES
+        minutes = max(TEMP_OVERRIDE_MIN_MINUTES, min(minutes, TEMP_OVERRIDE_MAX_MINUTES))
+        # Whole minutes only on the wire, so round the end UP to the next minute.
+        until = datetime.now().replace(second=0, microsecond=0)
+        until = until + timedelta(minutes=minutes + 1)
+        self._validate_and_publish_setpoint(dev, setpoint_c, "set", until=until)
 
     def action_request_zone_update(self, plugin_action):
         """Send RQ 30C9 to controller to request immediate zone temperature refresh."""
@@ -1644,17 +1704,18 @@ class Plugin(indigo.PluginBase):
         # Cheap, and rules out our own subscription having been lost.
         self._resubscribe_to_gateway()
 
-    def _note_setpoint_sent(self, zone_idx, setpoint_c, now):
+    def _note_setpoint_sent(self, zone_idx, setpoint_c, now, until=None):
         """Record a command waiting for the controller to report it. A new value for
-        the zone replaces the old one; a repeat of the same value counts as a resend."""
+        the zone replaces the old one; a repeat of the same value counts as a resend.
+        A temporary override keeps its end time, so a resend is the same command."""
         with self.pending_lock:
             rec = self.pending_setpoints.get(zone_idx)
-            if rec and abs(rec["sp"] - setpoint_c) < 0.01:
+            if rec and abs(rec["sp"] - setpoint_c) < 0.01 and rec.get("until") == until:
                 rec["last"]  = now
                 rec["sends"] += 1
             else:
                 self.pending_setpoints[zone_idx] = {
-                    "sp": setpoint_c, "first": now, "last": now, "sends": 1}
+                    "sp": setpoint_c, "first": now, "last": now, "sends": 1, "until": until}
 
     def _confirm_setpoint(self, zone_idx, reported_c):
         """The controller reported this zone's setpoint: clear a matching command."""
@@ -1683,8 +1744,8 @@ class Plugin(indigo.PluginBase):
                 continue
             if rec["sends"] < SETPOINT_MAX_SENDS:
                 if now - rec["last"] >= SETPOINT_RESEND_SECONDS:
-                    if self._publish_setpoint(zone_idx, rec["sp"]):
-                        self._note_setpoint_sent(zone_idx, rec["sp"], now)
+                    if self._publish_setpoint(zone_idx, rec["sp"], rec.get("until")):
+                        self._note_setpoint_sent(zone_idx, rec["sp"], now, rec.get("until"))
                         self.logger.debug(f"Zone {zone_idx}: setpoint resent "
                                           f"(attempt {rec['sends'] + 1})")
                 continue
@@ -2032,12 +2093,10 @@ class Plugin(indigo.PluginBase):
         setpoint_c = self._parse_temp_bytes(payload_hex, 1)
         mode_byte  = int(payload_hex[6:8], 16)    # byte 3 = hex chars 6-7
 
-        if mode_byte == ZONE_MODE_SCHEDULE:
-            mode_str = "schedule"
-        elif mode_byte == ZONE_MODE_PERMANENT:
-            mode_str = "permanent override"
-        else:
-            mode_str = f"mode 0x{mode_byte:02X}"
+        mode_str = ZONE_MODE_NAMES.get(mode_byte, f"mode 0x{mode_byte:02X}")
+        # A 13-byte 2349 carries the time a temporary override ends; every other mode
+        # has none, which clears a time left from an earlier override.
+        until_str = self._decode_2349_until(payload_hex) if mode_byte == ZONE_MODE_TEMPORARY else ""
 
         if self.debug:
             sp_disp = f"{setpoint_c:.2f}" if setpoint_c is not None else "unknown"
@@ -2054,6 +2113,7 @@ class Plugin(indigo.PluginBase):
                 self.pending_updates[zone_idx]["setpoint"] = setpoint_c
             self.pending_updates[zone_idx]["mode"]          = mode_str
             self.pending_updates[zone_idx]["mode_byte"]     = mode_byte
+            self.pending_updates[zone_idx]["until"]         = until_str
             self.pending_updates[zone_idx]["controller_id"] = controller_id
             self.pending_updates[zone_idx]["ts"]            = ts
 
@@ -2279,6 +2339,7 @@ class Plugin(indigo.PluginBase):
         try:
             state_updates = [
                 {"key": "zoneMode",  "value": mode_str},
+                {"key": "zoneOverrideUntil", "value": data.get("until", "")},
                 {"key": "lastSeen", "value": ts},
                 {"key": "online",    "value": "true"},
             ]
@@ -2813,18 +2874,43 @@ class Plugin(indigo.PluginBase):
         return f"{RAMSES_ROOT}/{self.gateway_id}/tx"
 
     @staticmethod
-    def _encode_2349_setpoint(zone_idx, setpoint_c):
-        """Encode the 7-byte W 2349 permanent-override payload as a hex string.
+    def _encode_2349_setpoint(zone_idx, setpoint_c, until=None):
+        """Encode a W 2349 payload as a hex string.
 
-        Layout: ZZ (zone) XXXX (setpoint*100, big-endian 16-bit) MM (mode 0x02) FFFFFF (no
-        expiry). E.g. zone 1 @ 21.5 degC -> "01" + "0866" + "02" + "FFFFFF" = "01086602FFFFFF".
+        No until: the 7-byte permanent override - ZZ (zone) XXXX (setpoint*100, big-endian)
+        02 (mode) FFFFFF (no countdown). Zone 1 @ 21.5 degC -> "01086602FFFFFF".
+
+        With until (a local datetime): the 13-byte temporary override - the same with mode
+        04, then the end time as minute, hour, day, month, year (big-endian 16-bit), the
+        layout ramses_rf's ZoneMode13BPayload uses. Zone 7 @ 8.5 until 19:22 on
+        28-09-2026 -> "07035204FFFFFF16131C0907EA", sent and honoured live.
         Pure + static so it can be unit-tested without a live gateway.
         """
         raw_setpoint = int(round(setpoint_c * TEMP_SCALE))
         raw_setpoint = max(0, min(raw_setpoint, TEMP_UNKNOWN_RAW - 1))
-        return f"{zone_idx:02X}{raw_setpoint:04X}{ZONE_MODE_PERMANENT:02X}FFFFFF"
+        if until is None:
+            return f"{zone_idx:02X}{raw_setpoint:04X}{ZONE_MODE_PERMANENT:02X}FFFFFF"
+        return (f"{zone_idx:02X}{raw_setpoint:04X}{ZONE_MODE_TEMPORARY:02X}FFFFFF"
+                f"{until.minute:02X}{until.hour:02X}{until.day:02X}{until.month:02X}"
+                f"{until.year:04X}")
 
-    def _publish_setpoint(self, zone_idx, setpoint_c):
+    @staticmethod
+    def _decode_2349_until(payload_hex):
+        """The end time of a 13-byte 2349 as "YYYY-MM-DD HH:MM", or "" when the payload
+        carries none (7 bytes, or an all-FF time)."""
+        if not payload_hex or len(payload_hex) < 26:
+            return ""
+        dtm = payload_hex[14:26].upper()
+        if dtm == "FFFFFFFFFFFF":
+            return ""
+        try:
+            minute, hour = int(dtm[0:2], 16), int(dtm[2:4], 16) & 0x7F
+            day, month, year = int(dtm[4:6], 16), int(dtm[6:8], 16), int(dtm[8:12], 16)
+            return datetime(year, month, day, hour, minute).strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            return ""
+
+    def _publish_setpoint(self, zone_idx, setpoint_c, until=None):
         """
         Publish a W 2349 permanent-override command to the gateway tx topic.
 
@@ -2863,12 +2949,13 @@ class Plugin(indigo.PluginBase):
                 return False
 
             # Encode the W 2349 permanent-override payload (zone + setpoint + mode + no expiry)
-            payload_hex = self._encode_2349_setpoint(zone_idx, setpoint_c)
+            payload_hex = self._encode_2349_setpoint(zone_idx, setpoint_c, until)
+            length      = "013" if until is not None else "007"
 
             # Normalise gateway address format (wiki shows 18:730, but device may use 18-730)
             gw_addr = self.gateway_id.replace("-", ":")
 
-            msg_str   = f"W --- {gw_addr} {controller_id} --:------ 2349 007 {payload_hex}"
+            msg_str   = f"W --- {gw_addr} {controller_id} --:------ 2349 {length} {payload_hex}"
             tx_payload = json.dumps({"msg": msg_str})
             topic     = self._gateway_tx_topic()
 
@@ -2890,7 +2977,8 @@ class Plugin(indigo.PluginBase):
                 return False
 
             self.logger.debug(
-                f"Zone {zone_idx}: W 2349 {setpoint_c:.1f}degC permanent override sent"
+                f"Zone {zone_idx}: W 2349 {setpoint_c:.1f}degC "
+                f"{'until ' + until.strftime('%H:%M') if until else 'permanent override'} sent"
             )
             return True
 

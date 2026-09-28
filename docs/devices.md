@@ -31,7 +31,8 @@ And these are the plugin's own states, which you can use in triggers and on cont
 
 | Shown as | What it means |
 |---|---|
-| **Zone Mode** | **schedule** when the zone is following its Evohome schedule, **permanent override** when its temperature has been set by hand and stays put. Any other mode Evohome reports shows as the word **mode** followed by a code number. |
+| **Zone Mode** | **schedule** when the zone is following its Evohome schedule, **permanent override** when its temperature has been set and stays put, and **temporary override** when it has been set until a time, after which Evohome goes back to the schedule. Evohome's other two kinds show as **advanced override** and **countdown override**. |
+| **Override Ends** | When a temporary override runs out, such as *2026-10-05 21:30*. Blank for any other mode. |
 | **Zone Name** | The zone's name, as described above. |
 | **Controller ID** | The radio address of your Evohome controller, such as `01:123456`. The plugin needs it before it can send a new temperature. |
 | **Last Seen** | The date and time of the last reading the plugin applied to this zone. |

@@ -7,6 +7,12 @@ nav_order: 12
 
 The newest version is at the top.
 
+## 1.12.0 — 28 September 2026
+
+- **New action: Set Temperature for a While.** It sets a zone for a number of minutes, and when the time runs out Evohome puts the zone back on its own timetable by itself. For an automation that means a stopped Indigo hands the house back to Evohome instead of holding the last temperature indefinitely. Tested on a real controller: it took the setting at once and went back to the timetable when the time was up.
+- **New state: Override Ends,** the time a temporary override runs out.
+- **Zone Mode names every Evohome mode:** schedule, permanent override, temporary override, advanced override and countdown override.
+
 ## 1.11.0 — 28 September 2026
 
 Fixes made before the heating comes back on for the winter.
