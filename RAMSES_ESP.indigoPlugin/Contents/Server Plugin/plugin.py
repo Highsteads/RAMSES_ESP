@@ -6,8 +6,20 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5, Claude Opus 5.5
-# Date:        27-09-2026
-# Version:     1.10.0
+# Date:        28-09-2026 17:10
+# Version:     1.11.0
+#
+# v1.11.0 (28-09-2026): before the heating returns. A gateway connected to MQTT but passing
+#   on no radio frames for 15 min is DEAF: gatewayStatus offline, alert + watchdog armed
+#   through gateway_offline_since, cleared by the next frame or a fresh presence 'online'.
+#   setpointHeat is no longer written when a W 2349 leaves: it changes on the controller's
+#   report, with resends every 60 s (3 in all), a WARNING after 5 min, and no sends at all
+#   while the gateway is offline or deaf (ERROR once per zone per outage); a refused paho
+#   publish (rc != 0) is caught. 30C9/2309/2349/0004 are taken only when SENT by our
+#   controller (valves send 2309 to it with their own, possibly stale, value); the
+#   controller is learned once (prefs, zone devices, first heard) and any other ignored,
+#   also for valve filing and boiler demand. Garbled frames log at DEBUG; startup logs one
+#   INFO line; valve summary grammar. (Claude Opus 5.5)
 #
 # v1.10.0 (27-09-2026): THE BOILER RELAY, AND WHEN THE BOILER IS CALLED FOR HEAT.
 #   * New device type `ramsesBoilerRelay`, created the first time a relay (13:) is heard.
@@ -470,6 +482,23 @@ RELAY_DEMAND_UNKNOWN     = -1           # a percentage nobody has reported
 RELAY_ERROR_TEXT         = "relay silent"
 RELAY_TS_FORMAT          = "%Y-%m-%d %H:%M:%S"
 
+# A gateway can stay connected to the broker, and keep saying it is online, while it
+# passes on no radio messages at all. MEASURED 28-09-2026: the controller broadcasts
+# every zone's temperature and setpoint about every 3 minutes, and the valves send in
+# between, so 15 minutes of nothing is five missed broadcasts. Treated as offline.
+GATEWAY_DEAF_SECONDS   = 900
+
+# A setpoint is shown only once the controller reports it back. Until then it is resent
+# every SETPOINT_RESEND_SECONDS, SETPOINT_MAX_SENDS times in all; a command still not
+# reported after SETPOINT_GIVE_UP_SECONDS (more than one 3-minute broadcast) is warned
+# about once. A report within SETPOINT_MATCH_C of what was sent counts - half a step of
+# the controller's 0.5 degC resolution, so an old value one step away never does.
+SETPOINT_RESEND_SECONDS = 60
+SETPOINT_MAX_SENDS      = 3
+SETPOINT_GIVE_UP_SECONDS = 300
+SETPOINT_FORGET_SECONDS = 1800
+SETPOINT_MATCH_C        = 0.26
+
 WD_VERIFY_SECONDS      = 8.0           # how long to wait for the plug to report the new state
 WD_VERIFY_POLL         = 0.5           # seconds between reads while waiting
 
@@ -542,6 +571,30 @@ class Plugin(indigo.PluginBase):
         # Writing pluginPrefs from the MQTT callback thread triggers closedPrefsConfigUi
         # which disconnects MQTT - so we defer the prefs write to the main thread.
         self.pending_gateway_id = ""                 # guarded by pending_lock
+
+        # Our Evohome controller. Learned once (prefs, else the zone devices, else the
+        # first controller heard) and then every other controller is ignored, so a
+        # neighbour's system in radio range cannot write into our zones.
+        self.controller_id         = ""
+        self.pending_controller_id = ""     # guarded by pending_lock; persisted by the main thread
+        self._foreign_controllers  = set()  # other controllers already mentioned once
+
+        # When a radio message last arrived, and since when we have been listening for
+        # them. A gateway connected to the broker but passing on nothing is "deaf".
+        self._last_rx_time         = 0.0
+        self._rx_listen_since      = time.time()
+        self.gateway_deaf          = False  # guarded by pending_lock
+
+        # Setpoints sent but not yet reported back by the controller.
+        # {zone_idx: {"sp": float, "first": ts, "last": ts, "sends": int}}; pending_lock.
+        self.pending_setpoints     = {}
+        # Zones already told they cannot be set during this outage, so it is said once.
+        self._setpoint_refused     = set()
+
+        # Set here as well as in startup(): startup() returns early when paho is missing,
+        # and the main loop reads this every pass.
+        self._zone_names_requested = False
+        self._mqtt_connected_before = False
 
         # Gateway online/offline monitoring
         self.gateway_online        = None   # None=unknown, True=online, False=offline
@@ -625,9 +678,8 @@ class Plugin(indigo.PluginBase):
     # --------------------------------------------------------------------------
 
     def startup(self):
-        # Banner already logged by log_startup_banner() in __init__; just continue.
-        self.logger.info(f"RAMSES ESP Plugin v{self.pluginVersion} ready")
-
+        # One summary line at the end of startup; the detail goes to DEBUG (house rule:
+        # Indigo's own "Started plugin" line plus at most one of ours).
         if not PAHO_AVAILABLE:
             self.logger.error(
                 "paho-mqtt library not found in Contents/Packages/ - plugin cannot run. "
@@ -644,7 +696,7 @@ class Plugin(indigo.PluginBase):
                 zone_idx = int(dev.address)
                 with self.zone_lock:
                     self.zone_devices[zone_idx] = dev.id
-                self.logger.info(f"  Restored Zone {zone_idx}: '{dev.name}' (dev ID {dev.id})")
+                self.logger.debug(f"  Restored Zone {zone_idx}: '{dev.name}' (dev ID {dev.id})")
                 restored += 1
 
                 # Force state-list refresh BEFORE seeding (v1.2.8 snake_case ->
@@ -668,14 +720,15 @@ class Plugin(indigo.PluginBase):
                         derived = derived[:-len(" Radiator")]
                     try:
                         self._write_states(dev, [{"key": "zoneName", "value": derived}])
-                        self.logger.info(f"    zoneName seeded from device name: '{derived}'")
+                        self.logger.debug(f"    zoneName seeded from device name: '{derived}'")
                     except Exception as exc:
                         self.logger.warning(f"    Could not seed zoneName for '{dev.name}': {exc}")
 
             except (ValueError, Exception) as exc:
                 self.logger.warning(f"  Could not restore zone device '{dev.name}': {exc}")
 
-        self.logger.info(f"  Restored {restored} existing zone device(s)")
+        if not self.controller_id:
+            self.controller_id = self._controller_from_zone_devices()
         for dev in indigo.devices.iter(f"self.{RELAY_TYPE_ID}"):
             with self.relay_lock:
                 self.relay_devices[dev.address] = dev.id
@@ -686,9 +739,11 @@ class Plugin(indigo.PluginBase):
         # plugin was not listening to it.
         self._load_trv_state()
         self._trv_listening_since = time.time()
-        self.logger.info(f"  MQTT broker:  {self.broker_host}:{self.broker_port}")
-        self.logger.info(f"  Gateway ID:   {self.gateway_id or '(awaiting discovery)'}")
-        self.logger.info("=" * 60)
+        self.logger.info(
+            f"RAMSES ESP ready: {restored} zone(s), broker {self.broker_host}:{self.broker_port}, "
+            f"gateway {self.gateway_id or '(awaiting discovery)'}, "
+            f"controller {self.controller_id or '(awaiting first message)'}"
+        )
         # Note: MQTT connection is started in runConcurrentThread after a short delay
 
         # One-time flag: True once RQ 0004 has been sent to populate zoneName states.
@@ -740,12 +795,20 @@ class Plugin(indigo.PluginBase):
             self.pending_zone_names.clear()
             new_gw_id     = self.pending_gateway_id
             self.pending_gateway_id = ""
+            new_ctrl_id   = self.pending_controller_id
+            self.pending_controller_id = ""
             gateway_alert = self.pending_gateway_alert
             self.pending_gateway_alert = None
 
         # Persist new gateway ID to prefs (must be done on main thread)
         if new_gw_id:
             self._persist_gateway_id(new_gw_id)
+        if new_ctrl_id:
+            self._persist_controller_id(new_ctrl_id)
+
+        # A gateway that is connected but passing on nothing counts as offline, so the
+        # alert and the power-cycle watchdog below act on it too.
+        self._check_gateway_deaf(time.time())
 
         # Send gateway "restored" Pushover alert if queued
         if gateway_alert:
@@ -789,6 +852,12 @@ class Plugin(indigo.PluginBase):
             if str(exc) != self._relay_pass_error:
                 self._relay_pass_error = str(exc)
                 self.logger.warning(f"Boiler relay update failed: {exc}")
+
+        # Setpoints the controller has not reported back yet: resend, or give up.
+        try:
+            self._retry_setpoints(time.time())
+        except Exception as exc:
+            self.logger.warning(f"Setpoint retry pass failed: {exc}")
 
         # Apply zone name updates (store state + auto-rename device)
         for zone_idx, name in zone_names.items():
@@ -1134,10 +1203,31 @@ class Plugin(indigo.PluginBase):
 
     def _validate_and_publish_setpoint(self, dev, setpoint_c, action_str):
         """
-        Clamp setpoint to valid range, publish W 2349 permanent override to RAMSES
-        gateway, and optimistically update setpointHeat state immediately so the UI
-        reflects the command before the next 2349/2309 broadcast confirms it.
+        Clamp setpoint to valid range and publish a W 2349 permanent override.
+
+        setpointHeat is NOT written here. Until 1.11.0 it was written the moment the
+        command left, so a command lost on the radio - or sent while the gateway was
+        offline - still showed as set, and anything reading setpointHeat (EvoHomeControl
+        decides whether to send by it) believed it. The state now changes only when the
+        controller reports the new value; _retry_setpoints resends meanwhile.
         """
+        with self.pending_lock:
+            gateway_online = self.gateway_online
+            gateway_deaf   = self.gateway_deaf
+        if gateway_online is False or gateway_deaf:
+            zone_key = dev.id
+            why = ("the gateway is offline" if gateway_online is False
+                   else "the gateway is passing on no radio messages")
+            if zone_key not in self._setpoint_refused:
+                self._setpoint_refused.add(zone_key)
+                self.logger.error(
+                    f"Cannot {action_str} setpoint for '{dev.name}' - {why}, so Evohome "
+                    f"would never receive it"
+                )
+            else:
+                self.logger.debug(f"Cannot {action_str} setpoint for '{dev.name}' - {why}")
+            return
+        self._setpoint_refused.clear()
         if not self.mqtt_connected:
             self.logger.error(
                 f"Cannot {action_str} setpoint for '{dev.name}' - MQTT not connected"
@@ -1157,16 +1247,7 @@ class Plugin(indigo.PluginBase):
             # _publish_setpoint already logged the specific error; nothing more to do
             return
 
-        # Optimistic UI update — actual confirmation arrives in next 30C9/2309 broadcast
-        try:
-            self._write_states(dev, [
-                {"key": "setpointHeat", "value": setpoint_c,
-                 "uiValue": f"{setpoint_c:.1f} degC"},
-            ])
-        except Exception as exc:
-            self.logger.warning(
-                f"Could not update setpointHeat state for '{dev.name}': {exc}"
-            )
+        self._note_setpoint_sent(zone_idx, setpoint_c, time.time())
 
         # Debug only: the EvoHome script already logs the room action at INFO level.
         # Suppress at INFO to keep the Indigo event log clean during normal operation.
@@ -1267,7 +1348,7 @@ class Plugin(indigo.PluginBase):
                 )
 
             self._last_connect_time = time.time()
-            self.logger.info(f"Connecting to MQTT broker {self.broker_host}:{self.broker_port}")
+            self.logger.debug(f"Connecting to MQTT broker {self.broker_host}:{self.broker_port}")
             client.connect(
                 host=self.broker_host,
                 port=self.broker_port,
@@ -1291,7 +1372,7 @@ class Plugin(indigo.PluginBase):
                     self.mqtt_client.disconnect()
                     self.mqtt_client = None
                     self.mqtt_connected = False
-            self.logger.info("MQTT client disconnected")
+            self.logger.debug("MQTT client disconnected")
         except Exception as exc:
             self.logger.warning(f"Error during MQTT disconnect: {exc}")
 
@@ -1308,19 +1389,24 @@ class Plugin(indigo.PluginBase):
         """
         if not reason_code.is_failure:
             self.mqtt_connected = True
-            self.logger.info(
-                f"MQTT connected to {self.broker_host}:{self.broker_port}"
-            )
+            # The first connect is part of starting up; a REconnect is news.
+            line = f"MQTT connected to {self.broker_host}:{self.broker_port}"
+            if self._mqtt_connected_before:
+                self.logger.info(line)
+            else:
+                self.logger.debug(line)
+            self._mqtt_connected_before = True
             # Always subscribe to gateway discovery topic
             client.subscribe(TOPIC_INFO_WILDCARD, qos=0)
-            self.logger.info(f"Subscribed to {TOPIC_INFO_WILDCARD}")
+            self.logger.debug(f"Subscribed to {TOPIC_INFO_WILDCARD}")
 
             # If gateway already known from prefs, also subscribe to its rx topic now
             if self.gateway_id and not self.gateway_subscribed:
                 rx_topic = f"{RAMSES_ROOT}/{self.gateway_id}/rx"
                 client.subscribe(rx_topic, qos=0)
                 self.gateway_subscribed = True
-                self.logger.info(f"Subscribed to {rx_topic}")
+                self._rx_listen_since = time.time()
+                self.logger.debug(f"Subscribed to {rx_topic}")
         else:
             self.mqtt_connected = False
             # str(ReasonCode) is already readable ("Not authorized", "Bad user
@@ -1407,10 +1493,15 @@ class Plugin(indigo.PluginBase):
                             self.gateway_offline_since = time.time()
                     elif payload_lower == "online":
                         prev_online = self.gateway_online
+                        was_deaf    = self.gateway_deaf
                         self.gateway_online = True
                         self.gateway_offline_since = None   # cancel any pending offline timer
+                        # A gateway that has just (re)joined gets a fresh listening window
+                        # before it can be called deaf again - after a power cycle, say.
+                        self.gateway_deaf = False
+                        self._rx_listen_since = time.time()
                         # Send "restored" only if the offline alert was actually sent
-                        if prev_online is False and self.gateway_alert_sent:
+                        if (prev_online is False or was_deaf) and self.gateway_alert_sent:
                             self.pending_gateway_alert = "restored"
                             self.gateway_alert_sent    = False
                 return
@@ -1440,6 +1531,173 @@ class Plugin(indigo.PluginBase):
 
         except Exception as exc:
             self.logger.error(f"Error in _handle_info_message: {exc}")
+
+    # --------------------------------------------------------------------------
+    # Our controller, the radio stream, and setpoint confirmation (1.11.0)
+    # --------------------------------------------------------------------------
+
+    def _controller_from_zone_devices(self):
+        """The controller every zone device already names, or "" if they disagree or
+        none does. Seeds the learned controller on an install that predates 1.11.0,
+        so the first controller heard after an upgrade never gets to decide."""
+        seen = set()
+        with self.zone_lock:
+            dev_ids = list(self.zone_devices.values())
+        for dev_id in dev_ids:
+            try:
+                cid = str(indigo.devices[dev_id].states.get("zoneControllerId", "")).strip()
+            except Exception:
+                continue
+            if cid.startswith("01:"):
+                seen.add(cid)
+        if len(seen) == 1:
+            cid = seen.pop()
+            with self.pending_lock:
+                self.pending_controller_id = cid
+            return cid
+        return ""
+
+    def _zone_frame_controller(self, fields):
+        """The sender, when a zone frame was SENT by our controller; "" otherwise.
+
+        MQTT thread. A frame from another controller is a neighbour's system and is
+        ignored, mentioned once per controller. With no controller known yet, the first
+        one heard becomes ours and is saved to the prefs by the main thread."""
+        src = controller_source(fields)
+        if not src:
+            return ""
+        if not self.controller_id:
+            self.controller_id = src
+            with self.pending_lock:
+                self.pending_controller_id = src
+            return src
+        if src != self.controller_id:
+            if src not in self._foreign_controllers:
+                self._foreign_controllers.add(src)
+                self.logger.info(
+                    f"Another Evohome controller ({src}) is in radio range - its "
+                    f"messages are ignored; ours is {self.controller_id}"
+                )
+            return ""
+        return src
+
+    def _persist_controller_id(self, cid):
+        """Save the learned controller to the prefs. Main thread only."""
+        try:
+            prefs = self.pluginPrefs
+            if prefs.get("controller_id") == cid:
+                return
+            prefs["controller_id"] = cid
+            self.pluginPrefs = prefs
+            self.logger.info(f"Evohome controller {cid} saved; other controllers are ignored")
+        except Exception as exc:
+            self.logger.warning(f"Could not save controller ID to prefs: {exc}")
+
+    def _note_rx(self, now):
+        """A radio message arrived. MQTT thread. Ends a deaf spell if there was one."""
+        self._last_rx_time = now
+        if not self.gateway_deaf:
+            return
+        with self.pending_lock:
+            if not self.gateway_deaf:
+                return
+            self.gateway_deaf = False
+            self.gateway_offline_since = None
+            if self.gateway_alert_sent:
+                self.pending_gateway_alert = "restored"
+                self.gateway_alert_sent    = False
+        self.logger.info("Radio messages are arriving from the gateway again")
+
+    @staticmethod
+    def _gateway_is_deaf(now, connected, online, subscribed, last_rx, listen_since,
+                         limit=GATEWAY_DEAF_SECONDS):
+        """True when the gateway says it is online and we are listening, but nothing
+        has arrived for longer than the limit. Only a gateway that claims to be online
+        can be deaf: an offline one is already handled by its last will."""
+        if not (connected and online is True and subscribed):
+            return False
+        return now - max(last_rx, listen_since) > limit
+
+    def _check_gateway_deaf(self, now):
+        """Main thread. Declare the gateway deaf once, and arm the offline alert and the
+        power-cycle watchdog through gateway_offline_since, exactly as a last will does."""
+        with self.pending_lock:
+            online = self.gateway_online
+            if self.gateway_deaf:
+                if self.gateway_offline_since is None:
+                    self.gateway_offline_since = now
+                return
+        if not self._gateway_is_deaf(now, self.mqtt_connected, online,
+                                     self.gateway_subscribed, self._last_rx_time,
+                                     self._rx_listen_since):
+            return
+        quiet = now - max(self._last_rx_time, self._rx_listen_since)
+        with self.pending_lock:
+            self.gateway_deaf = True
+            if self.gateway_offline_since is None:
+                self.gateway_offline_since = now
+        self.logger.warning(
+            f"The gateway says it is online but has passed on no radio messages for "
+            f"{quiet / 60:.0f} minutes, so it is being treated as offline. Evohome cannot "
+            f"be sent anything until messages arrive again."
+        )
+        # Cheap, and rules out our own subscription having been lost.
+        self._resubscribe_to_gateway()
+
+    def _note_setpoint_sent(self, zone_idx, setpoint_c, now):
+        """Record a command waiting for the controller to report it. A new value for
+        the zone replaces the old one; a repeat of the same value counts as a resend."""
+        with self.pending_lock:
+            rec = self.pending_setpoints.get(zone_idx)
+            if rec and abs(rec["sp"] - setpoint_c) < 0.01:
+                rec["last"]  = now
+                rec["sends"] += 1
+            else:
+                self.pending_setpoints[zone_idx] = {
+                    "sp": setpoint_c, "first": now, "last": now, "sends": 1}
+
+    def _confirm_setpoint(self, zone_idx, reported_c):
+        """The controller reported this zone's setpoint: clear a matching command."""
+        with self.pending_lock:
+            rec = self.pending_setpoints.get(zone_idx)
+            if rec and abs(rec["sp"] - reported_c) < SETPOINT_MATCH_C:
+                del self.pending_setpoints[zone_idx]
+            else:
+                return
+        self.logger.debug(f"Zone {zone_idx}: controller confirmed {reported_c:.1f} degC")
+
+    def _retry_setpoints(self, now):
+        """Main thread. Resend an unconfirmed command, give up on one that never takes,
+        and forget one left over from a long outage (the caller will send afresh)."""
+        with self.pending_lock:
+            items = {z: dict(r) for z, r in self.pending_setpoints.items()}
+            usable = self.gateway_online is not False and not self.gateway_deaf
+        for zone_idx, rec in items.items():
+            age = now - rec["first"]
+            if age >= SETPOINT_FORGET_SECONDS:
+                with self.pending_lock:
+                    self.pending_setpoints.pop(zone_idx, None)
+                self.logger.debug(f"Zone {zone_idx}: unconfirmed setpoint forgotten")
+                continue
+            if not usable or not self.mqtt_connected:
+                continue
+            if rec["sends"] < SETPOINT_MAX_SENDS:
+                if now - rec["last"] >= SETPOINT_RESEND_SECONDS:
+                    if self._publish_setpoint(zone_idx, rec["sp"]):
+                        self._note_setpoint_sent(zone_idx, rec["sp"], now)
+                        self.logger.debug(f"Zone {zone_idx}: setpoint resent "
+                                          f"(attempt {rec['sends'] + 1})")
+                continue
+            if age >= SETPOINT_GIVE_UP_SECONDS:
+                with self.pending_lock:
+                    self.pending_setpoints.pop(zone_idx, None)
+                dev = self._find_zone_device(zone_idx)
+                name = dev.name if dev is not None else f"Zone {zone_idx}"
+                self.logger.warning(
+                    f"Evohome has not confirmed {rec['sp']:.1f} degC for '{name}' after "
+                    f"{rec['sends']} attempts over {age / 60:.0f} minutes. The controller "
+                    f"may not have received it."
+                )
 
     def _set_gateway_id(self, gw_id):
         """Store gateway ID and queue persist to prefs (done by main thread). Subscribe to rx."""
@@ -1473,7 +1731,8 @@ class Plugin(indigo.PluginBase):
                 if self.mqtt_client is not None:
                     self.mqtt_client.subscribe(rx_topic, qos=0)
                     self.gateway_subscribed = True
-                    self.logger.info(f"Subscribed to {rx_topic}")
+                    self._rx_listen_since = time.time()
+                    self.logger.debug(f"Subscribed to {rx_topic}")
         except Exception as exc:
             self.logger.error(f"Failed to subscribe to {rx_topic}: {exc}")
 
@@ -1494,6 +1753,8 @@ class Plugin(indigo.PluginBase):
 
         if not msg_str:
             return
+
+        self._note_rx(time.time())
 
         self._parse_ramses_message(msg_str, ts)
 
@@ -1549,6 +1810,10 @@ class Plugin(indigo.PluginBase):
             elif opcode == OPCODE_ZONE_MODE:
                 self._parse_opcode_2349(fields, payload_hex, ts)
 
+        except ValueError as exc:
+            # A garbled radio frame (a payload that is not hex) is weather, not a fault:
+            # it used to log in red and reach the error watch.
+            self.logger.debug(f"Unreadable RAMSES message '{msg_str[:80]}': {exc}")
         except Exception as exc:
             self.logger.error(
                 f"Error parsing RAMSES message '{msg_str[:80]}': {exc}"
@@ -1564,6 +1829,10 @@ class Plugin(indigo.PluginBase):
         try:
             addr = trv_source(fields)
             if addr is None:
+                return
+            # A valve talking to ANOTHER controller is a neighbour's valve.
+            dests = [f.strip() for f in fields[4:6] if f.strip().startswith("01:")]
+            if self.controller_id and dests and self.controller_id not in dests:
                 return
             zone = trv_zone_from_fields(fields, payload_hex, MAX_ZONES)
             pct = low = None
@@ -1603,7 +1872,9 @@ class Plugin(indigo.PluginBase):
                 if opcode == OPCODE_ACTUATOR_STATE:
                     self.logger.debug(f"3EF0: relay {addr} level={level} ({payload_hex})")
                 return
-            if controller_source(fields) and opcode in (OPCODE_HEAT_DEMAND, OPCODE_RELAY_DEMAND):
+            ctrl = controller_source(fields)
+            if (ctrl and opcode in (OPCODE_HEAT_DEMAND, OPCODE_RELAY_DEMAND)
+                    and (not self.controller_id or ctrl == self.controller_id)):
                 pct = parse_boiler_demand(payload_hex)
                 if pct is None:
                     return
@@ -1669,14 +1940,14 @@ class Plugin(indigo.PluginBase):
           oscillate between TRVs, triggering spurious overheat detections every minute.
           IGNORED — only the controller's aggregated view is used.
         """
-        controller_id = self._extract_controller_id(fields)
+        controller_id = self._zone_frame_controller(fields)
         block_count   = len(payload_hex) // 6   # 3 bytes = 6 hex chars per block
 
-        # Reject individual TRV 30C9 packets (no 01: controller address).
-        # The controller's own periodic all-zone 30C9 is the authoritative source.
+        # Only the controller's own broadcast counts. A valve's 30C9 is ignored even
+        # when it is addressed TO the controller, which the old check let through.
         if not controller_id:
             if self.debug:
-                self.logger.debug("30C9: TRV-sourced packet ignored (no controller address)")
+                self.logger.debug("30C9: not sent by our controller - ignored")
             return
 
         for i in range(block_count):
@@ -1706,8 +1977,15 @@ class Plugin(indigo.PluginBase):
         """
         2309 - Zone setpoints.
         Payload: same 3-byte block structure as 30C9.
+
+        Only the controller's broadcast is taken. The valves send 2309 to the
+        controller as well (captured 28-09-2026: I --- 04:254001 --:------ 01:091567
+        2309 003 040320), reporting what THEY hold - which, just after a change, is the
+        old value. Until 1.11.0 those flicked setpointHeat back to it.
         """
-        controller_id = self._extract_controller_id(fields)
+        controller_id = self._zone_frame_controller(fields)
+        if not controller_id:
+            return
         block_count   = len(payload_hex) // 6
 
         for i in range(block_count):
@@ -1744,7 +2022,9 @@ class Plugin(indigo.PluginBase):
         if len(payload_hex) < 8:   # need at least 4 bytes = 8 hex chars
             return
 
-        controller_id = self._extract_controller_id(fields)
+        controller_id = self._zone_frame_controller(fields)
+        if not controller_id:
+            return
 
         zone_idx   = int(payload_hex[0:2], 16)
         if zone_idx >= MAX_ZONES:
@@ -1798,6 +2078,8 @@ class Plugin(indigo.PluginBase):
         """
         if len(payload_hex) < 6:
             # Need at least zone_idx + padding + 1 char of name
+            return
+        if not self._zone_frame_controller(fields):
             return
 
         try:
@@ -1962,6 +2244,7 @@ class Plugin(indigo.PluginBase):
         setpoint_c    = data["setpoint"]
         controller_id = data.get("controller_id", "")
         ts            = self._format_ts(data.get("ts", ""))
+        self._confirm_setpoint(zone_idx, setpoint_c)
 
         try:
             state_updates = [
@@ -2001,6 +2284,7 @@ class Plugin(indigo.PluginBase):
             ]
             if "setpoint" in data:
                 setpoint_c = data["setpoint"]
+                self._confirm_setpoint(zone_idx, setpoint_c)
                 state_updates.insert(0, {"key": "setpointHeat", "value": round(setpoint_c, 2),
                                          "uiValue": f"{setpoint_c:.2f} degC"})
             if controller_id:
@@ -2062,11 +2346,15 @@ class Plugin(indigo.PluginBase):
                                     clearErrorState=False, **extra)
 
     @staticmethod
-    def _gateway_status(mqtt_connected, gateway_online):
+    def _gateway_status(mqtt_connected, gateway_online, deaf=False):
         """The gatewayStatus word from what we know. Our own broker link comes first:
-        with it down nothing the gateway says can reach us, so any verdict is stale."""
+        with it down nothing the gateway says can reach us, so any verdict is stale.
+        A deaf gateway - connected, but passing on no radio messages - is offline for
+        every purpose that matters."""
         if not mqtt_connected or gateway_online is None:
             return GATEWAY_STATUS_UNKNOWN
+        if deaf:
+            return GATEWAY_STATUS_OFFLINE
         return GATEWAY_STATUS_ONLINE if gateway_online else GATEWAY_STATUS_OFFLINE
 
     def _publish_gateway_status(self):
@@ -2078,7 +2366,8 @@ class Plugin(indigo.PluginBase):
         """
         with self.pending_lock:
             gateway_online = self.gateway_online
-        value = self._gateway_status(self.mqtt_connected, gateway_online)
+            gateway_deaf   = self.gateway_deaf
+        value = self._gateway_status(self.mqtt_connected, gateway_online, gateway_deaf)
         with self.zone_lock:
             dev_ids = list(self.zone_devices.values())
         for dev_id in dev_ids:
@@ -2564,7 +2853,7 @@ class Plugin(indigo.PluginBase):
                 )
                 return False
 
-            controller_id = dev.states.get("zoneControllerId", "")
+            controller_id = self.controller_id or dev.states.get("zoneControllerId", "")
             if not controller_id or not controller_id.startswith("01:"):
                 self.logger.error(
                     f"Cannot publish setpoint for Zone {zone_idx} - "
@@ -2589,7 +2878,16 @@ class Plugin(indigo.PluginBase):
                         f"Cannot publish setpoint for Zone {zone_idx} - MQTT not connected"
                     )
                     return False
-                self.mqtt_client.publish(topic, tx_payload, qos=0)
+                info = self.mqtt_client.publish(topic, tx_payload, qos=0)
+            # paho returns MQTT_ERR_SUCCESS (0) once the message is queued; anything else
+            # means it never left, which used to be ignored.
+            rc = getattr(info, "rc", 0)
+            if isinstance(rc, int) and rc != 0:
+                self.logger.error(
+                    f"Cannot publish setpoint for Zone {zone_idx} - the MQTT client "
+                    f"refused it (code {rc})"
+                )
+                return False
 
             self.logger.debug(
                 f"Zone {zone_idx}: W 2349 {setpoint_c:.1f}degC permanent override sent"
@@ -2641,7 +2939,7 @@ class Plugin(indigo.PluginBase):
                 self.logger.warning(f"Error sending RQ 0004 for Zone {zone_idx}: {exc}")
 
         if success_count:
-            self.logger.info(
+            self.logger.debug(
                 f"Sent RQ 0004 for {success_count} zones to populate zoneName states"
             )
         return success_count > 0
@@ -2732,7 +3030,7 @@ class Plugin(indigo.PluginBase):
             with self.trv_lock:
                 loaded = self.trv.load_dict(data)
             if loaded:
-                self.logger.info(f"  Restored {loaded} valve record(s)")
+                self.logger.debug(f"  Restored {loaded} valve record(s)")
         except Exception as exc:
             self.logger.warning(f"Could not restore valve records: {exc}")
 
@@ -3163,6 +3461,10 @@ class Plugin(indigo.PluginBase):
 
         # Extract gateway ID. The shared sanitiser handles corruption where the id was typed
         # multiple times so Indigo stored "18:20305218:20305218:..." with no whitespace.
+        ctrl = str(prefs.get("controller_id", "")).strip()
+        if re.match(r"^01:\d{6}$", ctrl):
+            self.controller_id = ctrl
+
         raw_gw_id = prefs.get("discovered_gateway_id", "")
         clean = self._sanitise_gateway_id(raw_gw_id)
         self.gateway_id = clean if clean else raw_gw_id.strip()   # empty or already valid

@@ -7,6 +7,17 @@ nav_order: 12
 
 The newest version is at the top.
 
+## 1.11.0 — 28 September 2026
+
+Fixes made before the heating comes back on for the winter.
+
+- **A gateway that stops passing on radio messages is noticed.** It can stay connected, and say it is online, while nothing comes through it. After 15 minutes with no message the plugin now treats it as offline: **Gateway Status** shows **Offline**, the alert is sent and the power-cycle watchdog can act. Before, only the valves going silent six hours later gave it away, and they were blamed.
+- **A setpoint shows only once Evohome has it.** The plugin used to show a new temperature the moment it sent it, even when the gateway was offline and it could never arrive. It now shows it once the controller reports it back, sends it again every minute (three times in all) until then, and says so if the controller has not taken it after five minutes. Nothing is sent while the gateway is offline.
+- **Only your own controller counts.** Zone temperatures, setpoints, modes and names come only from messages the controller itself sends. The valves' own setpoint reports, which just after a change still carry the old value, no longer flick the setpoint back. A neighbour's Evohome in radio range is ignored.
+- The valve summary reads properly: *The valve is answering*, not *The valve answering*.
+- A garbled radio message is no longer logged as an error.
+- Starting up writes one line to the Event Log instead of about twenty.
+
 ## 1.10.0 — 27 September 2026
 
 **Indigo can now see when the boiler is being called for heat.** Evohome fires the boiler through a wireless relay, usually a BDR91, and the plugin now listens to it. See [Your boiler](boiler-relay.md).

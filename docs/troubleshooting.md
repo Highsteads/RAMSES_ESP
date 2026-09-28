@@ -79,6 +79,14 @@ The plugin lost its connection to the MQTT broker. It reconnects by itself, and 
 
 The broker has reported that the gateway dropped off the network. **Online (broker link)** can still read **true** at the same time, because the plugin's own connection to the broker is fine. Check the gateway's power and your Wi-Fi, or let the [power-cycle watchdog](gateway-watchdog.md) deal with it.
 
+## The log says the gateway has passed on no radio messages
+
+The gateway is still connected to the broker and says it is online, but nothing from the radio has come through it for 15 minutes. The plugin treats that as offline: **Gateway Status** shows **Offline**, the alert follows after five more minutes, and the [power-cycle watchdog](gateway-watchdog.md) can switch it off and on. It says so again when messages arrive.
+
+## The log says Evohome has not confirmed a setpoint
+
+The plugin sent a new temperature three times and the controller has not reported it back in five minutes. The controller may be out of range of the gateway, or the radio may be busy. The zone keeps showing the temperature the controller last reported, which is the one it is really using.
+
 ## I got a "RAMSES Gateway Offline" alert
 
 The gateway has been off the network for five minutes. Check its power and your Wi-Fi. If it does not come back by itself, switching its power off and on usually brings it back, which the [power-cycle watchdog](gateway-watchdog.md) can do for you.

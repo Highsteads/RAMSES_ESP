@@ -26,18 +26,20 @@ If the plugin loses its connection to the broker, it tries again every minute un
 
 ## What it reads
 
-The Evohome controller regularly broadcasts the temperature and the setpoint of every zone, and the plugin reads four kinds of message from it:
+The Evohome controller broadcasts the temperature and the setpoint of every zone about every three minutes, and the plugin reads four kinds of message from it:
 
 - **the temperature of each zone,**
 - **the setpoint of each zone,**
 - **each zone's mode** — following its schedule, or overridden,
 - **each zone's name.**
 
-The plugin takes a zone's temperature only from the controller. Each radiator valve also sends out its own reading, but where a zone has two valves — one in the sun and one on a cold wall, say — the two can differ by a good deal, and taking both would make the zone's temperature jump about. The controller's figure is the one Evohome itself heats to.
+The plugin takes a zone's temperature, setpoint, mode and name only from messages the controller itself sends. The valves also send their own setpoint to the controller, and just after a change that is still the old one, so it is not used. Each radiator valve also sends out its own reading, but where a zone has two valves — one in the sun and one on a cold wall, say — the two can differ by a good deal, and taking both would make the zone's temperature jump about. The controller's figure is the one Evohome itself heats to.
 
 Every message a radiator valve sends, whatever it is about, tells the plugin that valve is still alive. That is what the [valve health](valve-health.md) states are built from.
 
 The plugin also listens to the boiler relay, which reports whether it is closed, and to the controller's two figures for how much heat it wants. Those make up the [Boiler Relay](boiler-relay.md) device.
+
+**Only your own controller counts.** The plugin remembers the first Evohome controller it hears and ignores any other, so a neighbour's Evohome in radio range cannot change your zones. It says once in the Event Log when it hears another controller.
 
 ## Setting a temperature
 
@@ -45,7 +47,7 @@ When you set a zone's temperature from Indigo, the plugin sends it as a **perman
 
 A temperature is always kept between 8 °C and 35 °C. The Evohome controller will not go below about 8 °C, so the plugin does not either, which keeps Indigo showing the same figure the controller uses.
 
-The device shows the new setpoint straight away, and the controller's next broadcast confirms it.
+The device shows the new setpoint once the controller reports it back, usually within a few minutes. Until then the plugin sends it again every minute, three times in all, and if the controller has still not reported it after five minutes the Event Log says so. Nothing is sent while the gateway is offline, because it could never arrive: the Event Log says so once for each zone.
 
 ## The time on readings
 

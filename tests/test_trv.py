@@ -292,11 +292,11 @@ class TestDescribe:
 
     def test_one_valve_answering(self):
         s = T.describe(self._sum(), NOW)
-        assert s == "The valve answering. Battery 74%."
+        assert s == "The valve is answering. Battery 74%."
 
     def test_two_valves_say_both_and_lowest(self):
         s = T.describe(self._sum(count=2, addresses="04:aaa, 04:bbb"), NOW)
-        assert "Both valves answering" in s and "Lowest battery 74%" in s
+        assert "Both valves are answering" in s and "Lowest battery 74%" in s
 
     def test_three_valves_are_counted(self):
         assert "All 3 valves" in T.describe(self._sum(count=3), NOW)

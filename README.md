@@ -2,7 +2,7 @@
 
 **See and control your Honeywell Evohome heating from Indigo, locally over radio, with no Honeywell account or cloud.**
 
-**Version:** 1.10.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
+**Version:** 1.11.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
 
 **[Read the full guide](https://highsteads.github.io/RAMSES_ESP/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -43,6 +43,8 @@ This plugin lets [Indigo](https://www.indigodomo.com) work with a **Honeywell Ev
 The [full guide](https://highsteads.github.io/RAMSES_ESP/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v1.11.0** — A gateway that stays connected but passes on no radio messages is now treated as offline, so the alert and the watchdog act on it. A new setpoint shows only once Evohome reports it back, and is sent again until it does. Only your own controller's messages count, so the valves' own reports no longer flick a setpoint back.
 
 **v1.10.0** — A new **Boiler Relay** device shows when Evohome is calling the boiler for heat, by listening to the boiler relay (BDR91). It is an on/off sensor, so triggers and graphs can follow it, and it carries the controller's heat demand alongside. It says so if the relay goes quiet for an hour.
 

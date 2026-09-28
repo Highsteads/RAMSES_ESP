@@ -339,6 +339,7 @@ def describe(summary, now):
 
     n = summary["count"]
     what = "The valve" if n == 1 else ("Both valves" if n == 2 else f"All {n} valves")
+    verb = "is" if n == 1 else "are"
 
     if summary["online"] is False:
         names = summary["silent"] or "a valve"
@@ -347,11 +348,9 @@ def describe(summary, now):
         if "," in names:
             head = f"{names} have not been heard for {age}."
     elif summary["online"] is None:
-        head = f"{what} answering, though it is too soon since the restart to be sure."
-        if n > 1:
-            head = f"{what} answering, though it is too soon since the restart to be sure."
+        head = f"{what} {verb} answering, though it is too soon since the restart to be sure."
     else:
-        head = f"{what} answering."
+        head = f"{what} {verb} answering."
 
     batt = summary["battery"]
     if batt is None:

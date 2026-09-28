@@ -19,7 +19,7 @@ Every radiator valve sends messages of its own now and then — about the room t
 | **Valve Last Heard** | The date and time a valve in this zone was last heard. |
 | **Valves In This Zone** | How many valves the plugin has heard in this zone. |
 | **Valve Addresses** | Each valve's radio address, such as `04:123456`. |
-| **Valve Summary** | One plain sentence, such as "Both valves answering. Lowest battery 100%." |
+| **Valve Summary** | One plain sentence, such as "Both valves are answering. Lowest battery 100%." |
 
 Where a zone has more than one valve, every state reports the worse of them — the lowest battery, and silent if any one valve is silent — because a zone is only as healthy as its weakest valve.
 
