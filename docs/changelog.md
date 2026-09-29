@@ -7,6 +7,11 @@ nav_order: 12
 
 The newest version is at the top.
 
+## 1.15.0 — 29 September 2026
+
+- **Each zone says who last changed its temperature.** The new **Changed By** state reads *indigo* when Indigo sent it, *timetable* when the zone went back to its Evohome timetable, and *manual* when somebody changed it at the controller, on a valve's wheel or in the app. **Changed At** says when. A change made by hand also gets one line in the Event Log, such as *Bedroom 3 Radiator was set to 21 degrees until 10pm from outside Indigo.* EvoHome Heating Controller 1.16.0 uses this to leave a room alone after somebody changes it by hand.
+- **Set Temperature for a While can run until a date and time**, up to a year ahead, instead of for a number of minutes. Tested on a real controller, which took an end date eight months away without complaint. EvoHome Heating Controller 1.16.0 uses it so its summer hold ends by itself on the day heating is due back.
+
 ## 1.14.0 — 29 September 2026
 
 - **The boiler relay writes one line an hour instead of one per switch.** In winter the relay switches about six times an hour, which put twelve lines an hour into the Event Log. Now each hour in which the boiler ran gets one line, such as *Boiler Relay: the boiler was called for heat for 20 minutes between 7am and 8am, in 5 separate calls.* A quiet hour writes nothing.

@@ -32,6 +32,8 @@ And these are the plugin's own states, which you can use in triggers and on cont
 | Shown as | What it means |
 |---|---|
 | **Zone Mode** | **schedule** when the zone is following its Evohome schedule, **permanent override** when its temperature has been set and stays put, and **temporary override** when it has been set until a time, after which Evohome goes back to the schedule. Evohome's other two kinds show as **advanced override** and **countdown override**. |
+| **Changed By** | Who last changed the zone's temperature: *indigo* (Indigo sent it), *timetable* (the zone went back to its Evohome timetable) or *manual* (somebody changed it at the controller, on a valve's wheel or in the app). A change counts as Indigo's only if it matches something the plugin sent in the last 15 minutes. Blank until the first change after installing 1.15.0. |
+| **Changed At** | When that change was reported, such as *2026-10-05 18:42:10*. |
 | **Override Ends** | When a temporary override runs out, such as *2026-10-05 21:30*. Blank for any other mode. |
 | **Timetable** | The zone's weekly timetable as stored on the Evohome controller, in words, such as *Every day: 5am 17, 9am 18, noon 20, 7pm 21, 9pm 20, 10pm 16.* This is what the zone follows whenever nothing overrides it. Read at 3:15am each day. |
 | **Timetable Data** | The same timetable in a form other plugins can read. EvoHome Heating Controller uses it to check the timetable against its own plans. |

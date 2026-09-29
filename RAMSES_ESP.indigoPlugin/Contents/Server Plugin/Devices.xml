@@ -36,6 +36,18 @@ The device address is the zone index (0-11).</Label>
 				<ControlPageLabel>Zone Mode</ControlPageLabel>
 			</State>
 
+			<!-- Who made the last change to the zone (1.15.0): indigo, timetable or manual -->
+			<State id="setpointSource">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Changed By changed</TriggerLabel>
+				<ControlPageLabel>Changed By</ControlPageLabel>
+			</State>
+			<State id="setpointChangedAt">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Changed At changed</TriggerLabel>
+				<ControlPageLabel>Changed At</ControlPageLabel>
+			</State>
+
 			<!-- The zone's weekly timetable on the Evohome controller (1.13.0), read daily -->
 			<State id="timetable">
 				<ValueType>String</ValueType>

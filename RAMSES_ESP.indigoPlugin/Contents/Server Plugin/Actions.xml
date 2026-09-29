@@ -13,8 +13,11 @@
 			<Field id="minutes" type="textfield" defaultValue="120">
 				<Label>For how many minutes:</Label>
 			</Field>
+			<Field id="until" type="textfield" defaultValue="">
+				<Label>Or until (YYYY-MM-DD HH:MM):</Label>
+			</Field>
 			<Field id="help" type="label" fontSize="small" alignWithControl="true">
-				<Label>Between 10 minutes and 24 hours. When the time runs out, Evohome puts the zone back on its own timetable. Useful for an automation: if Indigo stops, the house goes back to the timetable instead of holding this temperature for ever.</Label>
+				<Label>Between 10 minutes and 24 hours, or until a date and time up to a year ahead, which wins when filled in. When the time runs out, Evohome puts the zone back on its own timetable. Useful for an automation: if Indigo stops, the house goes back to the timetable instead of holding this temperature for ever.</Label>
 			</Field>
 		</ConfigUI>
 	</Action>

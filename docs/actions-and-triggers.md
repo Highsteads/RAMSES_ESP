@@ -18,6 +18,8 @@ Each one sends the zone a permanent override, which it keeps until something cha
 
 The plugin's **Set Temperature for a While** action, on a zone, sets it to the temperature you give for the number of minutes you give, from 10 minutes to 24 hours. When the time runs out, Evohome puts the zone back on its own timetable by itself, with nothing needed from Indigo. That makes it the safer choice for an automation: if Indigo stops, the house goes back to the timetable instead of holding the last temperature it was sent. My EvoHome Heating Controller plugin uses it and renews it each hour.
 
+Instead of a number of minutes you can give an end date and time, as `YYYY-MM-DD HH:MM`, up to a year ahead. If both are filled in, the end date wins. An end in the past or more than a year away is refused with a line in the Event Log, and nothing is sent. From a script the property is `until`, alongside `setpoint`.
+
 A new temperature can only be sent once the plugin has found the gateway, is connected to the broker, and has heard at least one reading from the Evohome controller. If any of those is missing, the Event Log says which, and nothing is sent.
 
 Actions for cooling, fans and changing the mode do nothing, because Evohome zones only heat. A request to switch a zone off, from HomeKit say, is ignored and the zone stays in Heat.
@@ -38,6 +40,7 @@ The plugin has no triggers of its own. Instead, use Indigo's **Device State Chan
 - **Valve Battery** becomes **Battery low** — a valve is warning about its battery.
 - **Zone Mode** changes — a zone has gone on to, or come off, an override.
 - **Override Ends** changes — a timed override has been set or renewed, or has run out.
+- **Changed By** becomes **manual** — somebody has changed the zone by hand, at the controller, on a valve or in the app.
 
 On the **Boiler Relay** device, Indigo's own **Sensor turns on** and **Sensor turns off** triggers follow the boiler being called for heat, and **Relay Status** becoming **Silent** means the relay has not been heard for an hour.
 
