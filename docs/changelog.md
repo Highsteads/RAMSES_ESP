@@ -7,6 +7,12 @@ nav_order: 12
 
 The newest version is at the top.
 
+## 1.14.0 — 29 September 2026
+
+- **The boiler relay writes one line an hour instead of one per switch.** In winter the relay switches about six times an hour, which put twelve lines an hour into the Event Log. Now each hour in which the boiler ran gets one line, such as *Boiler Relay: the boiler was called for heat for 20 minutes between 7am and 8am, in 5 separate calls.* A quiet hour writes nothing.
+- **A relay device you delete stays deleted.** It used to come straight back from the relay's next message. A new menu item, **Bring Back Deleted Boiler Relays**, undoes it.
+- **A rare freeze is fixed.** When the plugin found its gateway for the first time during a reconnect, which only happens on a new install, it could stop responding.
+
 ## 1.13.0 — 29 September 2026
 
 - **The plugin reads each zone's timetable from the Evohome controller every night** at 3:15am, over the radio and without the cloud, and shows it on the zone as **Timetable**, for example *Every day: 5am 17, 9am 18, noon 20, 7pm 21, 9pm 20, 10pm 16.* That timetable is what the zone follows when nothing overrides it, including when Indigo is not running.

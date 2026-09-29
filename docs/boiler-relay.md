@@ -49,4 +49,8 @@ The relay only says when the boiler is being called for heat. The boiler's own t
 
 ## Deleting the device
 
-If you delete the Boiler Relay device, the plugin creates it again the next time it hears the relay. To stop it updating, disable the device instead.
+If you delete a relay device, it stays deleted: the plugin remembers its address and does not create it again, even after a restart. That is the way to be rid of a relay you do not want, such as a neighbour's or a hot-water relay you have no use for. **Plugins → RAMSES ESP → Bring Back Deleted Boiler Relays** undoes it, and each deleted relay is created again the next time it is heard.
+
+## What goes in the Event Log
+
+Once an hour in which the boiler was called for heat, one line says for how long and in how many calls, such as *Boiler Relay: the boiler was called for heat for 20 minutes between 7am and 8am, in 5 separate calls.* A quiet hour writes nothing. Each switch on and off is still on the device, and in the plugin's own log with debug logging on, but no longer in the Event Log, where in winter it added about twelve lines an hour.

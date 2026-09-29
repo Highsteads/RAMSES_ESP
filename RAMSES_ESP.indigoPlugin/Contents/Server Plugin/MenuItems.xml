@@ -21,6 +21,11 @@
         <CallbackMethod>menuReadTimetables</CallbackMethod>
     </MenuItem>
 
+    <MenuItem id="menuRestoreDeletedRelays">
+        <Name>Bring Back Deleted Boiler Relays</Name>
+        <CallbackMethod>menuRestoreDeletedRelays</CallbackMethod>
+    </MenuItem>
+
     <MenuItem id="sep1" isSeparator="true"/>
     <MenuItem id="showPluginInfo">
         <Name>Show Plugin Info</Name>

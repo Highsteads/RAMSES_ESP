@@ -6,8 +6,15 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5, Claude Opus 5.5
-# Date:        29-09-2026 13:00
-# Version:     1.13.0
+# Date:        29-09-2026 14:30
+# Version:     1.14.0
+#
+# v1.14.0 (29-09-2026): the relay's per-switch INFO line is DEBUG, replaced by one INFO line per
+#   clock hour in which the boiler ran (_account_relay_hour: 5-s passes, gaps capped at 60 s);
+#   a deleted relay's address goes to prefs ignoredRelays and is never created again (menu
+#   Bring Back Deleted Boiler Relays clears it); _mqtt_connect/_mqtt_disconnect no longer hold
+#   mqtt_lock across loop_stop(), which could deadlock with _resubscribe_to_gateway on first
+#   discovery. (Claude Opus 5.5)
 #
 # v1.13.0 (29-09-2026): NIGHTLY TIMETABLE READ. At 03:15 (and via action/menu readTimetables)
 #   a background thread reads every zone's 0404 timetable (ramses_timetable.py; replies handed
@@ -727,6 +734,12 @@ class Plugin(indigo.PluginBase):
         self._relay_listening_since = time.time()
         self._relay_demand_note = False   # said once that demand cannot be attributed
         self._relay_pass_error  = None    # last relay-pass fault warned about
+        # Relays the user deleted, by address: never created again (1.14.0). Loaded from
+        # and saved to the prefs, so a restart does not bring one back.
+        self.ignored_relays     = set()
+        # Burner time per relay per clock hour, for the hourly summary (1.14.0).
+        # {dev_id: {"hour": datetime, "on_secs": float, "calls": int, "last": ts, "on": bool}}
+        self._relay_hours       = {}
 
     # --------------------------------------------------------------------------
 
@@ -1178,12 +1191,20 @@ class Plugin(indigo.PluginBase):
     def deviceDeleted(self, dev):
         """Remove the device from the zone_devices index when deleted by the user."""
         if dev.deviceTypeId == RELAY_TYPE_ID:
+            # Until 1.14.0 the address stayed in relay_heard, so the next pass created the
+            # device again within seconds. A relay the user deletes now stays deleted.
             with self.relay_lock:
                 if self.relay_devices.get(dev.address) == dev.id:
                     del self.relay_devices[dev.address]
+                self.relay_heard.pop(dev.address, None)
+                self.ignored_relays.add(dev.address)
             self._relay_written.pop(dev.id, None)
             self._relay_heard_written.pop(dev.id, None)
-            self.logger.info(f"Boiler relay {dev.address} device deleted from index")
+            self._relay_hours.pop(dev.id, None)
+            self._save_ignored_relays()
+            self.logger.info(f"Boiler relay {dev.address} deleted. It will not be created "
+                             f"again; Plugins > RAMSES ESP > Bring Back Deleted Boiler Relays "
+                             f"undoes that.")
             return
         try:
             zone_idx = int(dev.address)
@@ -1592,16 +1613,20 @@ class Plugin(indigo.PluginBase):
             return
 
         try:
-            # Cleanly stop any existing client first
+            # Cleanly stop any existing client first. loop_stop() waits for paho's thread,
+            # and that thread can itself be waiting for mqtt_lock (_resubscribe_to_gateway on
+            # first discovery), so the lock is released before stopping - holding it across
+            # loop_stop() could freeze the plugin (1.14.0).
             with self.mqtt_lock:
-                if self.mqtt_client is not None:
-                    try:
-                        self.mqtt_client.loop_stop()
-                        self.mqtt_client.disconnect()
-                    except Exception:
-                        pass
-                    self.mqtt_client = None
-                    self.mqtt_connected = False
+                old_client = self.mqtt_client
+                self.mqtt_client = None
+                self.mqtt_connected = False
+            if old_client is not None:
+                try:
+                    old_client.loop_stop()
+                    old_client.disconnect()
+                except Exception:
+                    pass
 
             client_id = f"indigo-ramses-esp-{int(time.time())}"
 
@@ -1647,11 +1672,12 @@ class Plugin(indigo.PluginBase):
         """Gracefully stop the paho client."""
         try:
             with self.mqtt_lock:
-                if self.mqtt_client is not None:
-                    self.mqtt_client.loop_stop()
-                    self.mqtt_client.disconnect()
-                    self.mqtt_client = None
-                    self.mqtt_connected = False
+                old_client = self.mqtt_client
+                self.mqtt_client = None
+                self.mqtt_connected = False
+            if old_client is not None:
+                old_client.loop_stop()      # outside the lock - see _mqtt_connect
+                old_client.disconnect()
             self.logger.debug("MQTT client disconnected")
         except Exception as exc:
             self.logger.warning(f"Error during MQTT disconnect: {exc}")
@@ -2143,6 +2169,8 @@ class Plugin(indigo.PluginBase):
         try:
             now = time.time()
             addr = relay_source(fields)
+            if addr is not None and addr in self.ignored_relays:
+                return
             if addr is not None:
                 level = parse_relay_state(payload_hex) if opcode == OPCODE_ACTUATOR_STATE else None
                 with self.relay_lock:
@@ -3612,6 +3640,8 @@ class Plugin(indigo.PluginBase):
             devices = dict(self.relay_devices)
 
         for addr in sorted(heard):
+            if addr in self.ignored_relays:
+                continue
             if addr not in devices:
                 new_dev = self._create_relay_device(addr, first=not devices)
                 if new_dev is not None:
@@ -3641,6 +3671,74 @@ class Plugin(indigo.PluginBase):
                 dev.states, heard.get(addr), demand if attribute else None,
                 now, self._relay_listening_since)
             self._write_relay_states(dev, states, silent, now)
+            self._account_relay_hour(dev, states, now)
+
+    def _save_ignored_relays(self):
+        try:
+            prefs = self.pluginPrefs
+            prefs["ignoredRelays"] = ",".join(sorted(self.ignored_relays))
+            self.pluginPrefs = prefs
+            self.savePluginPrefs()
+        except Exception as exc:
+            self.logger.debug(f"Could not save the deleted-relay list: {exc}")
+
+    def menuRestoreDeletedRelays(self, valuesDict=None, typeId=None):
+        """Forget which relays were deleted, so each is created again when next heard."""
+        with self.relay_lock:
+            gone = sorted(self.ignored_relays)
+            self.ignored_relays.clear()
+        self._save_ignored_relays()
+        if gone:
+            self.logger.info(f"Deleted boiler relays {', '.join(gone)} will be created again "
+                             f"the next time each is heard.")
+        else:
+            self.logger.info("No boiler relay has been deleted, so there is nothing to bring back.")
+        return True
+
+    @staticmethod
+    def _relay_hour_sentence(name, hour_start, on_secs, calls):
+        """One plain sentence about an hour of the boiler relay, or None for a quiet hour."""
+        minutes = int(round(on_secs / 60.0))
+        if minutes == 0 and calls == 0:
+            return None
+        start = timetable.clock(hour_start.hour * 60)
+        end = timetable.clock(((hour_start.hour + 1) % 24) * 60)
+        if minutes >= 60:
+            span = "the whole hour"
+        elif minutes == 0:
+            span = "under a minute"
+        else:
+            span = f"{minutes} minute{'s' if minutes != 1 else ''}"
+        if calls == 0:
+            count = ", carrying on from the hour before"
+        elif calls == 1:
+            count = ", in one call"
+        else:
+            count = f", in {calls} separate calls"
+        return f"{name}: the boiler was called for heat for {span} between {start} and {end}{count}."
+
+    def _account_relay_hour(self, dev, states, now):
+        """Add this pass to the relay's hour, and log the hour just finished once a new one
+        starts. Replaces the line per switch (about 12 an hour in winter) with one an hour."""
+        is_on = bool(states.get("onOffState"))
+        local = datetime.fromtimestamp(now)
+        hour = local.replace(minute=0, second=0, microsecond=0)
+        rec = self._relay_hours.get(dev.id)
+        if rec is None:
+            self._relay_hours[dev.id] = {"hour": hour, "on_secs": 0.0,
+                                         "calls": 1 if is_on else 0, "last": now, "on": is_on}
+            return
+        gap = max(0.0, min(now - rec["last"], 60.0))   # a stalled loop must not invent burner time
+        if rec["on"]:
+            rec["on_secs"] += gap
+        if hour != rec["hour"]:
+            line = self._relay_hour_sentence(dev.name, rec["hour"], rec["on_secs"], rec["calls"])
+            if line:
+                self.logger.info(line)
+            rec.update(hour=hour, on_secs=0.0, calls=0)
+        if is_on and not rec["on"]:
+            rec["calls"] += 1
+        rec.update(last=now, on=is_on)
 
     def _write_relay_states(self, dev, states, silent, now):
         """Write what changed, then the error state. The only code that sets or clears
@@ -3665,7 +3763,8 @@ class Plugin(indigo.PluginBase):
             if any(i["key"] == "relayLastHeard" for i in batch):
                 self._relay_heard_written[dev.id] = now
             if "onOffState" in states and any(i["key"] == "onOffState" for i in batch):
-                self.logger.info(f"{dev.name}: {states['relaySummary']}")
+                # DEBUG from 1.14.0: the hourly summary carries it to the Event Log.
+                self.logger.debug(f"{dev.name}: {states['relaySummary']}")
 
         if silent:
             if getattr(dev, "errorState", "") != RELAY_ERROR_TEXT:
@@ -3774,6 +3873,9 @@ class Plugin(indigo.PluginBase):
         ctrl = str(prefs.get("controller_id", "")).strip()
         if re.match(r"^01:\d{6}$", ctrl):
             self.controller_id = ctrl
+
+        self.ignored_relays = {a.strip() for a in str(prefs.get("ignoredRelays", "") or "").split(",")
+                               if a.strip()}
 
         raw_gw_id = prefs.get("discovered_gateway_id", "")
         clean = self._sanitise_gateway_id(raw_gw_id)
