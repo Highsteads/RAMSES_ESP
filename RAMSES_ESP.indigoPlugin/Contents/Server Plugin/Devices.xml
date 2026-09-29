@@ -36,6 +36,23 @@ The device address is the zone index (0-11).</Label>
 				<ControlPageLabel>Zone Mode</ControlPageLabel>
 			</State>
 
+			<!-- The zone's weekly timetable on the Evohome controller (1.13.0), read daily -->
+			<State id="timetable">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Timetable changed</TriggerLabel>
+				<ControlPageLabel>Timetable</ControlPageLabel>
+			</State>
+			<State id="timetableData">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Timetable data changed</TriggerLabel>
+				<ControlPageLabel>Timetable Data</ControlPageLabel>
+			</State>
+			<State id="timetableRead">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Timetable read</TriggerLabel>
+				<ControlPageLabel>Timetable Read</ControlPageLabel>
+			</State>
+
 			<!-- When a temporary override ends, "YYYY-MM-DD HH:MM"; blank for any other mode -->
 			<State id="zoneOverrideUntil">
 				<ValueType>String</ValueType>

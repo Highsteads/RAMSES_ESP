@@ -22,6 +22,10 @@ A new temperature can only be sent once the plugin has found the gateway, is con
 
 Actions for cooling, fans and changing the mode do nothing, because Evohome zones only heat. A request to switch a zone off, from HomeKit say, is ignored and the zone stays in Heat.
 
+## Reading the timetables
+
+The plugin reads every zone's weekly timetable from the Evohome controller at 3:15am each day, over the radio, and puts it on the zone's **Timetable** state. The **Read Evohome Timetables Now** action, or the menu item of the same name, reads them straight away. Reading changes nothing on the controller. If the timetable of a zone has changed since the last read, the Event Log says so; if a zone does not answer, the Event Log says which, and the plugin tries again the next night.
+
 ## Asking for fresh temperatures
 
 Indigo's **Send Status Request** on a zone, and the plugin's own **Request Zone Update** action, both ask the Evohome controller to send its zone temperatures now, rather than waiting for its next regular broadcast. **Request Zone Update** is not tied to a zone, so you do not choose a device for it.

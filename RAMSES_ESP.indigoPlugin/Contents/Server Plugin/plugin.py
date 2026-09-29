@@ -6,8 +6,15 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5, Claude Opus 5.5
-# Date:        28-09-2026 19:50
-# Version:     1.12.0
+# Date:        29-09-2026 13:00
+# Version:     1.13.0
+#
+# v1.13.0 (29-09-2026): NIGHTLY TIMETABLE READ. At 03:15 (and via action/menu readTimetables)
+#   a background thread reads every zone's 0404 timetable (ramses_timetable.py; replies handed
+#   over through a queue from the MQTT thread, results written by the main loop) into states
+#   timetable / timetableData / timetableRead; a changed timetable is logged at INFO, a zone that
+#   does not answer at WARNING and retried the next night. Only our controller's replies count.
+#   (Claude Opus 5.5)
 #
 # v1.12.0 (28-09-2026): TEMPORARY OVERRIDES. Device action setTemporarySetpoint (props
 #   setpoint, minutes 10-1440) sends W 2349 013 mode 04 with an until time (minute, hour,
@@ -299,6 +306,7 @@ except ImportError:
     PAHO_AVAILABLE = False
 
 import json
+import queue
 import re
 import threading
 import time
@@ -378,6 +386,7 @@ from ramses_relay import (          # noqa: E402
     relay_source,
 )
 from ramses_relay import describe as describe_relay   # noqa: E402
+import ramses_timetable as timetable                  # noqa: E402
 
 # ==============================================================================
 # CONSTANTS
@@ -386,6 +395,14 @@ from ramses_relay import describe as describe_relay   # noqa: E402
 # PLUGIN_VERSION is read dynamically from Info.plist by Indigo and passed to
 # Plugin.__init__ as `plugin_version` (exposed as self.pluginVersion).  Do NOT
 # add a hardcoded version constant here — Info.plist is the single source of truth.
+
+# The Evohome timetables are read once a day at this local time (and on request). A full
+# read of 12 zones is about 36 radio exchanges, a minute or so, measured 29-09-2026.
+TIMETABLE_READ_MINUTE  = 3 * 60 + 15   # 03:15
+TIMETABLE_ASK_TIMEOUT  = 4.0           # seconds to wait for each fragment
+TIMETABLE_ASK_TRIES    = 3
+TIMETABLE_ASK_GAP      = 0.5           # seconds between requests, to be gentle on the radio
+TIMETABLE_STARTUP_WAIT = 120           # seconds after subscribing before a first-ever read
 
 MQTT_KEEPALIVE         = 60            # seconds for MQTT keepalive ping
 MQTT_RECONNECT_DELAY   = 60            # seconds between reconnect attempts
@@ -622,6 +639,16 @@ class Plugin(indigo.PluginBase):
         self._zone_names_requested = False
         self._mqtt_connected_before = False
 
+        # Evohome timetables (1.13.0). One reader thread at a time; replies are handed to it
+        # from the MQTT thread through a queue, and its results back to the main loop,
+        # which alone writes device states.
+        self._timetable_lock      = threading.Lock()
+        self._timetable_replies   = queue.Queue()
+        self._timetable_requested = False
+        self._timetable_last_date = ""          # local date of the last completed read
+        self._timetable_results   = None        # (results, failed) for the main loop; pending_lock
+        self._stopping            = threading.Event()
+
         # Gateway online/offline monitoring
         self.gateway_online        = None   # None=unknown, True=online, False=offline
         self.gateway_alert_sent    = False  # True after offline Pushover sent; reset on restore
@@ -779,6 +806,7 @@ class Plugin(indigo.PluginBase):
     # --------------------------------------------------------------------------
 
     def shutdown(self):
+        self._stopping.set()
         self.logger.info("RAMSES ESP Plugin shutting down")
         self._save_trv_state()
         self._mqtt_disconnect()
@@ -835,6 +863,13 @@ class Plugin(indigo.PluginBase):
         # A gateway that is connected but passing on nothing counts as offline, so the
         # alert and the power-cycle watchdog below act on it too.
         self._check_gateway_deaf(time.time())
+
+        # Evohome timetables: publish a finished read, then start one if it is due.
+        try:
+            self._apply_timetable_results(datetime.now())
+            self._maybe_start_timetable_read(datetime.now())
+        except Exception as exc:
+            self.logger.warning(f"Timetable pass failed: {exc}")
 
         # Send gateway "restored" Pushover alert if queued
         if gateway_alert:
@@ -1318,6 +1353,191 @@ class Plugin(indigo.PluginBase):
         until = datetime.now().replace(second=0, microsecond=0)
         until = until + timedelta(minutes=minutes + 1)
         self._validate_and_publish_setpoint(dev, setpoint_c, "set", until=until)
+
+    # --------------------------------------------------------------------------
+    # Evohome timetables (1.13.0)
+    # --------------------------------------------------------------------------
+
+    def action_read_timetables(self, plugin_action=None):
+        """Read every zone's timetable from the controller now, in the background."""
+        self._timetable_requested = True
+        self.logger.info("Reading the Evohome timetables now. Each room's Timetable state "
+                         "updates within about a minute.")
+
+    def menuReadTimetables(self, valuesDict=None, typeId=None):
+        self.action_read_timetables()
+        return True
+
+    def _note_timetable_reply(self, fields, payload_hex):
+        """MQTT thread: hand a timetable fragment from OUR controller to the reader."""
+        if not self._timetable_lock.locked():
+            return
+        if not self._zone_frame_controller(fields):
+            return
+        parsed = timetable.parse_reply(payload_hex)
+        if parsed:
+            self._timetable_replies.put(parsed)
+
+    def _timetable_last_read_date(self):
+        """The newest local date any zone device says it was read, or ""."""
+        newest = ""
+        with self.zone_lock:
+            dev_ids = list(self.zone_devices.values())
+        for dev_id in dev_ids:
+            try:
+                stamp = str(indigo.devices[dev_id].states.get("timetableRead", "") or "")
+            except Exception:
+                continue
+            newest = max(newest, stamp[:10])
+        return newest
+
+    @staticmethod
+    def _timetable_due(now, last_date, requested, listening_for):
+        """Whether to start a read: on request, once a day at or after 03:15, or soon
+        after the very first start when nothing has ever been read."""
+        if requested:
+            return True
+        if not last_date:
+            return listening_for >= TIMETABLE_STARTUP_WAIT
+        today = now.strftime("%Y-%m-%d")
+        return last_date != today and now.hour * 60 + now.minute >= TIMETABLE_READ_MINUTE
+
+    def _maybe_start_timetable_read(self, now):
+        if self._timetable_lock.locked():
+            return
+        with self.pending_lock:
+            usable = self.gateway_online is True and not self.gateway_deaf
+        if not (usable and self.mqtt_connected and self.gateway_subscribed
+                and self.gateway_id and self.controller_id):
+            return
+        if not self._timetable_last_date:
+            self._timetable_last_date = self._timetable_last_read_date()
+        if not self._timetable_due(now, self._timetable_last_date, self._timetable_requested,
+                                   time.time() - self._rx_listen_since):
+            return
+        if not self._timetable_lock.acquire(blocking=False):
+            return
+        self._timetable_requested = False
+        with self.zone_lock:
+            zones = sorted(self.zone_devices)
+        threading.Thread(target=self._read_timetables_worker, args=(zones,),
+                         name="RAMSES-timetables", daemon=True).start()
+
+    def _publish_raw(self, msg_str):
+        """Send one RAMSES line through the gateway. True once paho has queued it."""
+        with self.mqtt_lock:
+            if self.mqtt_client is None or not self.mqtt_connected:
+                return False
+            info = self.mqtt_client.publish(self._gateway_tx_topic(),
+                                            json.dumps({"msg": msg_str}), qos=0)
+        rc = getattr(info, "rc", 0)
+        return not (isinstance(rc, int) and rc != 0)
+
+    def _ask_timetable_fragment(self, zone, frag, total):
+        """One fragment of one zone, with retries; the (total, data) reply or None."""
+        gw = self.gateway_id.replace("-", ":")
+        msg = (f"RQ --- {gw} {self.controller_id} --:------ 0404 007 "
+               f"{timetable.build_request(zone, frag, total)}")
+        for _ in range(TIMETABLE_ASK_TRIES):
+            if self._stopping.is_set():
+                return None
+            if not self._publish_raw(msg):
+                return None
+            deadline = time.time() + TIMETABLE_ASK_TIMEOUT
+            while True:
+                left = deadline - time.time()
+                if left <= 0:
+                    break
+                try:
+                    r_zone, r_frag, r_total, data = self._timetable_replies.get(timeout=left)
+                except queue.Empty:
+                    break
+                if (r_zone, r_frag) == (zone, frag):
+                    return r_total, data
+            time.sleep(TIMETABLE_ASK_GAP)
+        return None
+
+    def _read_one_timetable(self, zone):
+        first = self._ask_timetable_fragment(zone, 1, 0)
+        if first is None:
+            return None
+        total, data = first
+        fragments = [data]
+        for frag in range(2, total + 1):
+            time.sleep(TIMETABLE_ASK_GAP)
+            nxt = self._ask_timetable_fragment(zone, frag, total)
+            if nxt is None:
+                return None
+            fragments.append(nxt[1])
+        return timetable.decode(fragments)
+
+    def _read_timetables_worker(self, zones):
+        """Background thread: read each zone in turn. Touches no Indigo device; the main
+        loop publishes what it finds."""
+        results, failed = {}, []
+        try:
+            while not self._timetable_replies.empty():
+                self._timetable_replies.get_nowait()
+            for zone in zones:
+                if self._stopping.is_set():
+                    return
+                try:
+                    week = self._read_one_timetable(zone)
+                except ValueError as exc:
+                    self.logger.debug(f"Timetable for zone {zone} could not be decoded: {exc}")
+                    week = None
+                if week is None:
+                    failed.append(zone)
+                else:
+                    results[zone] = week
+                time.sleep(TIMETABLE_ASK_GAP)
+            with self.pending_lock:
+                self._timetable_results = (results, failed)
+        except Exception as exc:
+            self.logger.warning(f"Reading the Evohome timetables failed: {exc}")
+        finally:
+            self._timetable_lock.release()
+
+    def _apply_timetable_results(self, now):
+        """Main thread: write what the reader found to the zone devices."""
+        with self.pending_lock:
+            done, self._timetable_results = self._timetable_results, None
+        if done is None:
+            return
+        results, failed = done
+        stamp = now.strftime("%Y-%m-%d %H:%M")
+        changed = []
+        for zone, week in results.items():
+            dev = self._find_zone_device(zone)
+            if dev is None:
+                continue
+            data = timetable.to_json(week)
+            before = str(dev.states.get("timetableData", "") or "")
+            try:
+                self._write_states(dev, [
+                    {"key": "timetable",     "value": timetable.describe(week)},
+                    {"key": "timetableData", "value": data},
+                    {"key": "timetableRead", "value": stamp},
+                ])
+            except Exception as exc:
+                self.logger.warning(f"Could not store the timetable for '{dev.name}': {exc}")
+                continue
+            if before and before != data:
+                changed.append(dev.name)
+                self.logger.info(f"The Evohome timetable for '{dev.name}' has changed. "
+                                 f"It is now: {timetable.describe(week)}")
+        if failed:
+            names = []
+            for zone in failed:
+                dev = self._find_zone_device(zone)
+                names.append(f"'{dev.name}'" if dev is not None else f"zone {zone}")
+            joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+            self.logger.warning(f"Could not read the Evohome timetable for {joined}. "
+                                f"The plugin tries again tomorrow.")
+        else:
+            self._timetable_last_date = now.strftime("%Y-%m-%d")
+        self.logger.debug(f"Read {len(results)} Evohome timetable(s); "
+                          f"{len(changed)} changed, {len(failed)} could not be read")
 
     def action_request_zone_update(self, plugin_action):
         """Send RQ 30C9 to controller to request immediate zone temperature refresh."""
@@ -1870,6 +2090,8 @@ class Plugin(indigo.PluginBase):
                 self._parse_opcode_2309(fields, payload_hex, ts)
             elif opcode == OPCODE_ZONE_MODE:
                 self._parse_opcode_2349(fields, payload_hex, ts)
+            elif opcode == timetable.OPCODE_TIMETABLE and verb == "RP":
+                self._note_timetable_reply(fields, payload_hex)
 
         except ValueError as exc:
             # A garbled radio frame (a payload that is not hex) is weather, not a fault:

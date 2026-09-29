@@ -33,6 +33,9 @@ And these are the plugin's own states, which you can use in triggers and on cont
 |---|---|
 | **Zone Mode** | **schedule** when the zone is following its Evohome schedule, **permanent override** when its temperature has been set and stays put, and **temporary override** when it has been set until a time, after which Evohome goes back to the schedule. Evohome's other two kinds show as **advanced override** and **countdown override**. |
 | **Override Ends** | When a temporary override runs out, such as *2026-10-05 21:30*. Blank for any other mode. |
+| **Timetable** | The zone's weekly timetable as stored on the Evohome controller, in words, such as *Every day: 5am 17, 9am 18, noon 20, 7pm 21, 9pm 20, 10pm 16.* This is what the zone follows whenever nothing overrides it. Read at 3:15am each day. |
+| **Timetable Data** | The same timetable in a form other plugins can read. EvoHome Heating Controller uses it to check the timetable against its own plans. |
+| **Timetable Read** | When the timetable was last read, such as *2026-10-05 03:15*. |
 | **Zone Name** | The zone's name, as described above. |
 | **Controller ID** | The radio address of your Evohome controller, such as `01:123456`. The plugin needs it before it can send a new temperature. |
 | **Last Seen** | The date and time of the last reading the plugin applied to this zone. |

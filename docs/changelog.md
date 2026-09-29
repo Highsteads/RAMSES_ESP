@@ -7,6 +7,13 @@ nav_order: 12
 
 The newest version is at the top.
 
+## 1.13.0 — 29 September 2026
+
+- **The plugin reads each zone's timetable from the Evohome controller every night** at 3:15am, over the radio and without the cloud, and shows it on the zone as **Timetable**, for example *Every day: 5am 17, 9am 18, noon 20, 7pm 21, 9pm 20, 10pm 16.* That timetable is what the zone follows when nothing overrides it, including when Indigo is not running.
+- The Event Log says when a zone's timetable has changed since the night before, and names any zone that did not answer.
+- New action and menu item: **Read Evohome Timetables Now**.
+- Two more states, **Timetable Data** and **Timetable Read**, so other plugins can check the timetable. EvoHome Heating Controller 1.15.0 uses them to check it against its own plans.
+
 ## 1.12.0 — 28 September 2026
 
 - **New action: Set Temperature for a While.** It sets a zone for a number of minutes, and when the time runs out Evohome puts the zone back on its own timetable by itself. For an automation that means a stopped Indigo hands the house back to Evohome instead of holding the last temperature indefinitely. Tested on a real controller: it took the setting at once and went back to the timetable when the time was up.

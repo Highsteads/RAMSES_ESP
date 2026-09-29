@@ -16,6 +16,11 @@
         <CallbackMethod>menuForgetSilentTrvs</CallbackMethod>
     </MenuItem>
 
+    <MenuItem id="menuReadTimetables">
+        <Name>Read Evohome Timetables Now</Name>
+        <CallbackMethod>menuReadTimetables</CallbackMethod>
+    </MenuItem>
+
     <MenuItem id="sep1" isSeparator="true"/>
     <MenuItem id="showPluginInfo">
         <Name>Show Plugin Info</Name>

@@ -19,6 +19,12 @@
 		</ConfigUI>
 	</Action>
 
+	<!-- Read every zone's timetable from the Evohome controller now (1.13.0). -->
+	<Action id="readTimetables" uiPath="PluginActions">
+		<Name>Read Evohome Timetables Now</Name>
+		<CallbackMethod>action_read_timetables</CallbackMethod>
+	</Action>
+
 	<!-- Request immediate zone update from controller.
 	     The setZoneSetpoint custom action has been replaced by Indigo's built-in
 	     thermostat Set Heat Setpoint action (via actionControlThermostat callback). -->
