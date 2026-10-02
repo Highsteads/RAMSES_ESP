@@ -40,13 +40,14 @@ And these are the plugin's own states, which you can use in triggers and on cont
 | **Timetable Read** | When the timetable was last read, such as *2026-10-05 03:15*. |
 | **Zone Name** | The zone's name, as described above. |
 | **Controller ID** | The radio address of your Evohome controller, such as `01:123456`. The plugin needs it before it can send a new temperature. |
-| **Last Seen** | The date and time of the last reading the plugin applied to this zone. |
+| **Last Seen** | The date and time of the last reading of any kind the plugin applied to this zone: a temperature, a setpoint or a mode. |
+| **Temperature Last Reported** | The date and time the controller last reported this zone's temperature. **Last Seen** moves on setpoint reports too, which arrive whether or not the temperature does, so this is the one to use to tell a current temperature from an old one. Blank until the first temperature arrives. |
 | **Online (broker link)** | **false** when the plugin has lost its connection to the MQTT broker, and **true** again as soon as fresh readings arrive. It is about the plugin's own connection only, so it stays **true** when the gateway itself dies while the broker is still running. Use **Gateway Status** for the gateway. |
 | **Gateway Status** | **Online** while the RAMSES-ESP gateway is connected, **Offline** once the broker reports it has dropped off, and **Not known** until the gateway has first been heard, or while the plugin itself has lost the broker. Every zone shows the same value, as they all share the one gateway. Use this in a trigger to hear about a dead gateway. |
 
 A zone also carries seven states about its radiator valves — **Valve Status**, **Valve Battery**, **Valve Battery (%)**, **Valve Last Heard**, **Valves In This Zone**, **Valve Addresses** and **Valve Summary**. The [Valve health](valve-health.md) page explains them.
 
-A brand-new device shows 0.00 for its temperature and setpoint until its first real reading arrives.
+A brand-new device shows 0.00 for its temperature and setpoint until its first real reading arrives, and **Temperature Last Reported** stays blank until then, so the 0.00 can be told apart from a real reading.
 
 The plugin also creates one device for the boiler relay, which the [Your boiler](boiler-relay.md) page describes.
 

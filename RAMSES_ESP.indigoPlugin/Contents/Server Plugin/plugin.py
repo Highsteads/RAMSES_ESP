@@ -6,8 +6,16 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5, Claude Opus 5.5
-# Date:        29-09-2026 14:30
-# Version:     1.15.0
+# Date:        02-10-2026 09:55
+# Version:     1.16.0
+#
+# v1.16.0 (02-10-2026): TEMPERATURE FRESHNESS. New zone state temperatureSeen, written only by
+#   _apply_temp_update (controller 30C9). lastSeen also moves on 2309 setpoint and 2349 mode
+#   reports, which the controller sends whether or not the temperature arrives, so a consumer
+#   could not tell a frozen reading from a current one (independent review 02-10-2026). Blank on
+#   a new zone until its first temperature. Measured the same day: the controller's 30C9 for all
+#   12 zones comes in the same burst as its 2309. EvoHome Heating Controller 1.18.0 reads it.
+#   (Claude Opus 5.5)
 #
 # v1.15.0 (29-09-2026): WHO CHANGED IT. Each zone carries setpointSource (indigo / timetable /
 #   manual) and setpointChangedAt: a change reported within 15 minutes of a matching command of
@@ -2565,6 +2573,9 @@ class Plugin(indigo.PluginBase):
                 {"key": "hvacOperationMode", "value": indigo.kHvacMode.Heat},
                 {"key": "hvacHeaterIsOn",    "value": is_heating},
                 {"key": "lastSeen",         "value": ts},
+                # Only a temperature report moves this; setpoint and mode reports
+                # move lastSeen alone, which kept a frozen reading looking fresh.
+                {"key": "temperatureSeen",  "value": ts},
                 {"key": "online",            "value": "true"},
             ]
             # Only update zoneControllerId if non-empty — direct TRV messages

@@ -7,6 +7,11 @@ nav_order: 12
 
 The newest version is at the top.
 
+## 1.16.0 — 2 October 2026
+
+- **Each zone says when its temperature was last reported.** The new **Temperature Last Reported** state moves only when the controller sends the zone's temperature. **Last Seen** also moves when the controller sends its setpoints, which it does whether or not the temperature arrives, so a temperature that had stopped updating could still look current. EvoHome Heating Controller 1.18.0 uses the new state to leave a room alone when its temperature is out of date.
+- A new zone's state stays blank until its first temperature arrives, so its starting 0.00 cannot be taken for a real reading.
+
 ## 1.15.0 — 29 September 2026
 
 - **Each zone says who last changed its temperature.** The new **Changed By** state reads *indigo* when Indigo sent it, *timetable* when the zone went back to its Evohome timetable, and *manual* when somebody changed it at the controller, on a valve's wheel or in the app. **Changed At** says when. A change made by hand also gets one line in the Event Log, such as *Bedroom 3 Radiator was set to 21 degrees until 10pm from outside Indigo.* EvoHome Heating Controller 1.16.0 uses this to leave a room alone after somebody changes it by hand.
