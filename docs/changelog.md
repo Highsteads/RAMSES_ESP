@@ -7,6 +7,12 @@ nav_order: 12
 
 The newest version is at the top.
 
+## 1.17.0 — 5 October 2026
+
+- **A renewed timed setting is checked properly.** EvoHome Heating Controller renews a room's timed setting every so often at the same temperature with a later end time. The plugin used to count it as taken as soon as the controller's regular temperature broadcast showed the same temperature, which it would have shown anyway, so a renewal lost on the radio was never resent and the room could drop back to its timetable early. Now the controller has to report the whole setting back, the temperature, whether it is timed or permanent, and when it ends, and the plugin keeps resending until it does.
+- **A change made by hand at the same temperature is no longer taken for Indigo's.** If somebody held a room for good at the temperature Indigo had set a few minutes earlier, the plugin called the change Indigo's, and EvoHome Heating Controller then overwrote it. A change now counts as Indigo's only when the kind of setting and its end time match what Indigo sent as well.
+- **A new zone state, Temperature Last Reported (seconds),** gives the time of the last temperature as a count of seconds. The existing date and time follow the wall clock, which repeats an hour when the clocks go back on 25 October, so a reading could look minutes old when it was an hour old. EvoHome Heating Controller 1.18.1 uses the new state to work out how old a temperature is.
+
 ## 1.16.0 — 2 October 2026
 
 - **Each zone says when its temperature was last reported.** The new **Temperature Last Reported** state moves only when the controller sends the zone's temperature. **Last Seen** also moves when the controller sends its setpoints, which it does whether or not the temperature arrives, so a temperature that had stopped updating could still look current. EvoHome Heating Controller 1.18.0 uses the new state to leave a room alone when its temperature is out of date.

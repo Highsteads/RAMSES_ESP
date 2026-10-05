@@ -222,11 +222,16 @@ def test_a_sent_setpoint_is_not_shown_until_the_controller_reports_it(sending):
 
 
 def test_the_controllers_report_confirms_it(sending):
+    """The 2309 shows the temperature at once; the command clears only when the 2349
+    reports the same mode back (1.17.0)."""
     plug, zone = sending
     plug._validate_and_publish_setpoint(zone, 20.5, "set")
     plug._apply_setpoint_update(3, {"setpoint": 20.5, "ts": "", "controller_id": OURS})
-    assert plug.pending_setpoints == {}
     assert zone.states["setpointHeat"] == pytest.approx(20.5)
+    assert 3 in plug.pending_setpoints
+    plug._apply_mode_update(3, {"setpoint": 20.5, "mode": "permanent override", "until": "",
+                                "ts": "", "controller_id": OURS})
+    assert plug.pending_setpoints == {}
 
 
 def test_the_old_value_one_step_away_does_not_confirm_it(sending):

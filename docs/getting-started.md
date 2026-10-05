@@ -50,7 +50,7 @@ Look in the Indigo Event Log. Within a few seconds you should see the plugin con
 
 As the Evohome controller sends out its regular readings, a device appears for each zone, in a new device folder called **RAMSES**. Each starts with a name such as **RAMSES Zone 3**, and shows the room temperature once the first reading arrives.
 
-Try changing one zone's heat setpoint in Indigo. The device shows the new target straight away, and the controller's next broadcast confirms it. **Zone Mode** changes to **permanent override** when the controller next reports that zone's mode.
+Try changing one zone's heat setpoint in Indigo. The device shows the new target once the controller reports it back, which is usually within a few seconds. **Zone Mode** changes to **permanent override** when the controller next reports that zone's mode.
 
 If nothing appears, the [When something goes wrong](troubleshooting.md) page goes through the usual causes.
 

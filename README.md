@@ -2,7 +2,7 @@
 
 **See and control your Honeywell Evohome heating from Indigo, locally over radio, with no Honeywell account or cloud.**
 
-**Version:** 1.16.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
+**Version:** 1.17.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
 
 **[Read the full guide](https://highsteads.github.io/RAMSES_ESP/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -43,6 +43,8 @@ This plugin lets [Indigo](https://www.indigodomo.com) work with a **Honeywell Ev
 The [full guide](https://highsteads.github.io/RAMSES_ESP/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v1.17.0** — A renewed timed setting counts as taken only when the controller reports back the same temperature, kind of setting and end time, so a lost renewal is resent. A change by hand at the temperature Indigo just set is no longer taken for Indigo's. A new **Temperature Last Reported (seconds)** state gives a reading's time in a form the October clock change cannot confuse.
 
 **v1.16.0** — Each zone has a new **Temperature Last Reported** state, which moves only when the controller sends that zone's temperature, so a temperature that has stopped updating can be told from a current one.
 

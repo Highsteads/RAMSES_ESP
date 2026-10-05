@@ -64,16 +64,16 @@ def test_a_change_nobody_here_sent_is_by_hand(zone):
 
 def test_our_own_command_is_ours(zone):
     plug, dev = zone
-    plug._validate_and_publish_setpoint(dev, 20.5, "set",
-                                        until=datetime.now() + timedelta(hours=2))
-    _report(plug, 20.5, "temporary override", "2026-10-05 22:00")
+    until = datetime.now() + timedelta(hours=2)
+    plug._validate_and_publish_setpoint(dev, 20.5, "set", until=until)
+    _report(plug, 20.5, "temporary override", until.strftime("%Y-%m-%d %H:%M"))
     assert dev.states["setpointSource"] == "indigo"
     plug.logger.info.assert_not_called()
 
 
 def test_an_old_command_does_not_excuse_a_new_change(zone, monkeypatch):
     plug, dev = zone
-    plug._sent_log[7] = (21.0, time.time() - 3600)
+    plug._sent_log[7] = (21.0, time.time() - 3600, None)
     _report(plug, 21.0, "temporary override", "2026-10-05 22:00")
     assert dev.states["setpointSource"] == "manual"
 

@@ -101,6 +101,15 @@ The device address is the zone index (0-11).</Label>
 				<ControlPageLabel>Temperature Last Reported</ControlPageLabel>
 			</State>
 
+			<!-- The same moment as temperatureSeen, in seconds since 1 January 1970 (UTC).
+			     temperatureSeen is local clock time, which repeats an hour when the clocks
+			     go back, so a reader working out an age should use this one. -->
+			<State id="temperatureSeenEpoch">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Temperature Last Reported (seconds) changed</TriggerLabel>
+				<ControlPageLabel>Temperature Last Reported (seconds)</ControlPageLabel>
+			</State>
+
 			<!-- "true" or "false". THIS PLUGIN'S link to the MQTT broker: "false" when that
 			     link drops, "true" again with the next zone message. It does NOT follow the
 			     RAMSES-ESP gateway, and stays "true" when the gateway dies while the broker is

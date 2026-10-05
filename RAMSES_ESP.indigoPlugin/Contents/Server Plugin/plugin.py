@@ -6,8 +6,18 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5, Claude Opus 5.5
-# Date:        02-10-2026 09:55
-# Version:     1.16.0
+# Date:        05-10-2026 22:50
+# Version:     1.17.0
+#
+# v1.17.0 (05-10-2026): A COMMAND IS CONFIRMED BY THE SAME COMMAND COMING BACK (external audit).
+#   HI-04: a 2309 broadcast confirms the temperature only; a pending command clears when a 2349
+#   heard after it reports the same mode and end time (and the temperature, or a 2309 already
+#   did), so a same-temperature renewal of a timed setting that never landed is resent instead of
+#   being cleared by the next 2309. HI-05: _sent_log keeps (setpoint, time, until) and a change is
+#   "indigo" only when mode and end time match the command too, so a person holding a room for
+#   good at our temperature is "manual". HI-09: new Integer state temperatureSeenEpoch (seconds
+#   since the epoch) beside temperatureSeen, whose local text repeats an hour on 25-10-2026; read
+#   by EvoHome Heating Controller 1.18.1. (Claude Opus 5.5)
 #
 # v1.16.0 (02-10-2026): TEMPERATURE FRESHNESS. New zone state temperatureSeen, written only by
 #   _apply_temp_update (controller 30C9). lastSeen also moves on 2309 setpoint and 2349 mode
@@ -2002,8 +2012,10 @@ class Plugin(indigo.PluginBase):
     def _note_setpoint_sent(self, zone_idx, setpoint_c, now, until=None):
         """Record a command waiting for the controller to report it. A new value for
         the zone replaces the old one; a repeat of the same value counts as a resend.
-        A temporary override keeps its end time, so a resend is the same command."""
-        self._sent_log[zone_idx] = (setpoint_c, now)
+        A temporary override keeps its end time, so a resend is the same command.
+        The sent log keeps the whole command (1.17.0), so a change at the same
+        temperature but a different mode or end time is not mistaken for ours."""
+        self._sent_log[zone_idx] = (setpoint_c, now, until)
         with self.pending_lock:
             rec = self.pending_setpoints.get(zone_idx)
             if rec and abs(rec["sp"] - setpoint_c) < 0.01 and rec.get("until") == until:
@@ -2011,17 +2023,61 @@ class Plugin(indigo.PluginBase):
                 rec["sends"] += 1
             else:
                 self.pending_setpoints[zone_idx] = {
-                    "sp": setpoint_c, "first": now, "last": now, "sends": 1, "until": until}
+                    "sp": setpoint_c, "first": now, "last": now, "sends": 1, "until": until,
+                    "sp_ok": False}
 
-    def _confirm_setpoint(self, zone_idx, reported_c):
-        """The controller reported this zone's setpoint: clear a matching command."""
+    @staticmethod
+    def _command_mode(until):
+        """The zone mode and end time ("YYYY-MM-DD HH:MM", or "") the controller reports
+        once it has taken a command: temporary with that end, or permanent with none."""
+        if until is None:
+            return ZONE_MODE_NAMES[ZONE_MODE_PERMANENT], ""
+        return ZONE_MODE_NAMES[ZONE_MODE_TEMPORARY], until.strftime("%Y-%m-%d %H:%M")
+
+    @staticmethod
+    def _heard_after(rec, data, key="rx"):
+        """A report counts only when it was heard after the command first left. A frame
+        heard earlier can still be waiting in pending_updates when the command goes.
+        "rx" stamps a 2349 (mode) frame, "sp_rx" a 2309 (setpoint) frame."""
+        rx = data.get(key) if data else None
+        return rx is None or rx >= rec["first"]
+
+    def _confirm_setpoint(self, zone_idx, reported_c, data=None):
+        """The controller's 2309 reported this zone's setpoint. That carries the
+        temperature only, so it confirms the temperature only: the command stays
+        pending until a 2349 reports the same mode and end time (1.17.0). EvoHomeControl
+        renews a timed setting at the same temperature, and the 2309 broadcast used to
+        clear a renewal that had never landed."""
         with self.pending_lock:
             rec = self.pending_setpoints.get(zone_idx)
-            if rec and abs(rec["sp"] - reported_c) < SETPOINT_MATCH_C:
-                del self.pending_setpoints[zone_idx]
-            else:
+            if not rec or abs(rec["sp"] - reported_c) >= SETPOINT_MATCH_C:
                 return
-        self.logger.debug(f"Zone {zone_idx}: controller confirmed {reported_c:.1f} degC")
+            if not self._heard_after(rec, data, "sp_rx"):
+                return
+            rec["sp_ok"] = True
+        self.logger.debug(f"Zone {zone_idx}: controller reports {reported_c:.1f} degC; "
+                          f"waiting for its zone mode report")
+
+    def _confirm_mode(self, zone_idx, data):
+        """The controller's 2349 reported this zone's mode: clear the pending command
+        when it reports the same command back - mode and end time always, and the
+        temperature too, or a 2309 since the command has already reported it."""
+        with self.pending_lock:
+            rec = self.pending_setpoints.get(zone_idx)
+            if not rec or not self._heard_after(rec, data):
+                return
+            want_mode, want_until = self._command_mode(rec.get("until"))
+            if data.get("mode") != want_mode or (data.get("until") or "") != want_until:
+                return
+            reported = data.get("setpoint")
+            if reported is None:
+                if not rec.get("sp_ok"):
+                    return
+            elif abs(rec["sp"] - reported) >= SETPOINT_MATCH_C:
+                return
+            del self.pending_setpoints[zone_idx]
+        self.logger.debug(f"Zone {zone_idx}: controller confirmed {rec['sp']:.1f} degC, "
+                          f"{want_mode}{' until ' + want_until if want_until else ''}")
 
     def _retry_setpoints(self, now):
         """Main thread. Resend an unconfirmed command, give up on one that never takes,
@@ -2371,6 +2427,7 @@ class Plugin(indigo.PluginBase):
                 self.pending_updates[zone_idx]["setpoint"]      = setpoint_c
                 self.pending_updates[zone_idx]["controller_id"] = controller_id
                 self.pending_updates[zone_idx]["ts"]            = ts
+                self.pending_updates[zone_idx]["sp_rx"]         = time.time()
 
     def _parse_opcode_2349(self, fields, payload_hex, ts):
         """
@@ -2416,6 +2473,7 @@ class Plugin(indigo.PluginBase):
             self.pending_updates[zone_idx]["until"]         = until_str
             self.pending_updates[zone_idx]["controller_id"] = controller_id
             self.pending_updates[zone_idx]["ts"]            = ts
+            self.pending_updates[zone_idx]["rx"]            = time.time()
 
     def _parse_opcode_0004(self, fields, payload_hex, ts):
         """
@@ -2556,6 +2614,7 @@ class Plugin(indigo.PluginBase):
         temp_c        = data["temp"]
         controller_id = data.get("controller_id", "")
         ts            = self._format_ts(data.get("ts", ""))
+        ts_epoch      = self._ts_epoch(data.get("ts", ""))
 
         # hvacHeaterIsOn: True when zone temp is meaningfully below setpoint.
         # Used by HomeKit and other integrations to show the heating-active indicator.
@@ -2576,6 +2635,9 @@ class Plugin(indigo.PluginBase):
                 # Only a temperature report moves this; setpoint and mode reports
                 # move lastSeen alone, which kept a frozen reading looking fresh.
                 {"key": "temperatureSeen",  "value": ts},
+                # The same moment as seconds since the epoch (1.17.0). The text above is
+                # local wall-clock time, which repeats an hour when the clocks go back.
+                {"key": "temperatureSeenEpoch", "value": ts_epoch},
                 {"key": "online",            "value": "true"},
             ]
             # Only update zoneControllerId if non-empty — direct TRV messages
@@ -2607,7 +2669,7 @@ class Plugin(indigo.PluginBase):
         setpoint_c    = data["setpoint"]
         controller_id = data.get("controller_id", "")
         ts            = self._format_ts(data.get("ts", ""))
-        self._confirm_setpoint(zone_idx, setpoint_c)
+        self._confirm_setpoint(zone_idx, setpoint_c, data)
 
         try:
             state_updates = [
@@ -2625,12 +2687,21 @@ class Plugin(indigo.PluginBase):
             self.logger.error(f"Error updating Zone {zone_idx} setpoint state: {exc}")
 
     @staticmethod
-    def _change_source(new_setpoint, new_mode, sent, now):
+    def _change_source(new_setpoint, new_mode, sent, now, new_until=""):
         """Who made a change the controller has just reported: this plugin, the
-        timetable, or someone outside Indigo."""
+        timetable, or someone outside Indigo.
+
+        Ours only when the temperature, the mode AND the end time all match a command
+        sent within the window (1.17.0). Matching the temperature alone called a person
+        who held a room for good at the temperature Indigo had just set "indigo", and
+        EvoHomeControl then overwrote them."""
         if sent is not None and new_setpoint is not None:
-            sent_sp, sent_ts = sent
-            if abs(sent_sp - new_setpoint) < SETPOINT_MATCH_C and now - sent_ts <= SOURCE_WINDOW_SECONDS:
+            sent_sp, sent_ts, sent_until = (tuple(sent) + (None,))[:3]
+            want_mode, want_until = Plugin._command_mode(sent_until)
+            if (abs(sent_sp - new_setpoint) < SETPOINT_MATCH_C
+                    and now - sent_ts <= SOURCE_WINDOW_SECONDS
+                    and new_mode == want_mode
+                    and (new_until or "") == want_until):
                 return SOURCE_INDIGO
         if new_mode == "schedule":
             return SOURCE_TIMETABLE
@@ -2651,7 +2722,8 @@ class Plugin(indigo.PluginBase):
                    or (new_sp is not None and (old_sp is None or abs(new_sp - old_sp) > 0.05)))
         if not changed:
             return []
-        source = self._change_source(new_sp, new_mode, self._sent_log.get(zone_idx), time.time())
+        source = self._change_source(new_sp, new_mode, self._sent_log.get(zone_idx), time.time(),
+                                     new_end)
         if source == SOURCE_MANUAL:
             if new_mode == "permanent override":
                 how = "until it is changed back"
@@ -2692,9 +2764,9 @@ class Plugin(indigo.PluginBase):
                 {"key": "lastSeen", "value": ts},
                 {"key": "online",    "value": "true"},
             ]
+            self._confirm_mode(zone_idx, data)
             if "setpoint" in data:
                 setpoint_c = data["setpoint"]
-                self._confirm_setpoint(zone_idx, setpoint_c)
                 state_updates.insert(0, {"key": "setpointHeat", "value": round(setpoint_c, 2),
                                          "uiValue": f"{setpoint_c:.2f} degC"})
             if controller_id:
@@ -3439,6 +3511,19 @@ class Plugin(indigo.PluginBase):
             return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _ts_epoch(ts_raw):
+        """The gateway timestamp as whole seconds since the epoch, for a reader that
+        needs an age it can trust across a clock change. Falls back to now exactly where
+        _format_ts does: a pre-NTP (1970) time, or one that will not parse."""
+        try:
+            dt = datetime.fromisoformat(ts_raw)
+            if dt.year < EPOCH_SENTINEL_YEAR:
+                return int(time.time())
+            return int(dt.timestamp())
+        except Exception:
+            return int(time.time())
 
     # --------------------------------------------------------------------------
     # Per-valve liveness + battery

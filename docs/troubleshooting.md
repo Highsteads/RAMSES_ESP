@@ -85,7 +85,7 @@ The gateway is still connected to the broker and says it is online, but nothing 
 
 ## The log says Evohome has not confirmed a setpoint
 
-The plugin sent a new temperature three times and the controller has not reported it back in five minutes. The controller may be out of range of the gateway, or the radio may be busy. The zone keeps showing the temperature the controller last reported, which is the one it is really using.
+The plugin sent a new temperature three times and the controller has not reported it back in five minutes. From 1.17.0 the controller has to report back the whole setting, the temperature, whether it is timed or permanent, and when it ends, before the plugin counts it as taken, so a timed setting renewed at the same temperature is resent if the new end time does not arrive. The controller may be out of range of the gateway, or the radio may be busy. The zone keeps showing the temperature the controller last reported, which is the one it is really using.
 
 ## I got a "RAMSES Gateway Offline" alert
 
