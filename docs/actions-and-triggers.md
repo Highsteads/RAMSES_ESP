@@ -18,7 +18,9 @@ Each one sends the zone a permanent override, which it keeps until something cha
 
 The plugin's **Set Temperature for a While** action, on a zone, sets it to the temperature you give for the number of minutes you give, from 10 minutes to 24 hours. When the time runs out, Evohome puts the zone back on its own timetable by itself, with nothing needed from Indigo. That makes it the safer choice for an automation: if Indigo stops, the house goes back to the timetable instead of holding the last temperature it was sent. My EvoHome Heating Controller plugin uses it and renews it each hour.
 
-Instead of a number of minutes you can give an end date and time, as `YYYY-MM-DD HH:MM`, up to a year ahead. If both are filled in, the end date wins. An end in the past or more than a year away is refused with a line in the Event Log, and nothing is sent. From a script the property is `until`, alongside `setpoint`.
+Instead of a number of minutes you can give an end date and time, as `YYYY-MM-DD HH:MM`, up to a year ahead. If both are filled in, the end date wins. An end in the past or more than a year away is refused with a line in the Event Log, and nothing is sent. From a script the property is `until`, alongside `setpoint`. A length in minutes is counted in real time, so a two-hour setting started on the night the clocks change still lasts two hours.
+
+Called from a script with `executeAction`, the action answers `{"accepted": True or False, "reason": "..."}` (1.18.0). *Accepted* means the command left for the gateway; *refused* gives the reason, such as *the gateway is offline*, and nothing was sent. EvoHome Heating Controller uses this to know a refused setting was never sent.
 
 A new temperature can only be sent once the plugin has found the gateway, is connected to the broker, and has heard at least one reading from the Evohome controller. If any of those is missing, the Event Log says which, and nothing is sent.
 

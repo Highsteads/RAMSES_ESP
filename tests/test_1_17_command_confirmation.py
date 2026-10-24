@@ -139,10 +139,13 @@ def test_a_mode_report_with_no_setpoint_confirms_once_the_temperature_has(zone):
 
 
 def test_a_different_temperature_in_the_mode_report_does_not_confirm_it(zone):
+    """Not a confirmation: from 1.18.0 it is a change by hand (it matches none of our
+    commands), which supersedes ours rather than leaving it to be resent over it."""
     plug, dev = zone
     end = _renew(plug, dev)
     _mode_report(plug, 20.0, "temporary override", end)
-    assert 7 in plug.pending_setpoints
+    assert 7 not in plug.pending_setpoints
+    assert dev.states["setpointSource"] == "manual"
 
 
 def test_the_mode_frame_is_stamped_with_when_it_arrived(plug):

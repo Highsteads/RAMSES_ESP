@@ -47,6 +47,13 @@ The device address is the zone index (0-11).</Label>
 				<TriggerLabel>Changed At changed</TriggerLabel>
 				<ControlPageLabel>Changed At</ControlPageLabel>
 			</State>
+			<!-- setpointChangedAt as seconds since the epoch (1.18.0), which the clocks going
+			     back cannot make ambiguous. EvoHomeControl compares this one. -->
+			<State id="setpointChangedAtEpoch">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Changed At (seconds) changed</TriggerLabel>
+				<ControlPageLabel>Changed At (seconds)</ControlPageLabel>
+			</State>
 
 			<!-- The zone's weekly timetable on the Evohome controller (1.13.0), read daily -->
 			<State id="timetable">

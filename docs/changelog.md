@@ -7,6 +7,16 @@ nav_order: 12
 
 The newest version is at the top.
 
+## 1.18.0 — 24 October 2026
+
+Fixes from a review of this plugin and EvoHome Heating Controller together.
+
+- **A change made by hand is never undone by a retry.** If someone changed a zone at the controller, on a valve or in the app while one of Indigo's settings was still waiting to be confirmed, the plugin used to send its own setting again a minute later, over theirs. Now the change by hand cancels it. One of Indigo's own earlier settings arriving late is still recognised as Indigo's.
+- **Changed By is right when the temperature is reported first.** The controller sometimes reports a new temperature before its full report of the zone's setting. The plugin then missed the change and kept the old **Changed By** and **Changed At**.
+- **Set Temperature for a While tells a script whether it sent.** Called from a script, it now answers whether the setting left for the gateway, and why not if it did not. EvoHome Heating Controller 1.25.0 uses this.
+- **Times survive the clocks going back.** A new zone state, **Changed At (seconds)**, gives the moment of a change as a count of seconds, which the repeated hour cannot confuse. A setting for a number of minutes now lasts that many real minutes on the night the clocks change.
+- **A failed timetable read waits an hour.** It used to start again at once, all day. It now tries again an hour later, up to three times a day, and the log says when.
+
 ## 1.17.0 — 5 October 2026
 
 - **A renewed timed setting is checked properly.** EvoHome Heating Controller renews a room's timed setting every so often at the same temperature with a later end time. The plugin used to count it as taken as soon as the controller's regular temperature broadcast showed the same temperature, which it would have shown anyway, so a renewal lost on the radio was never resent and the room could drop back to its timetable early. Now the controller has to report the whole setting back, the temperature, whether it is timed or permanent, and when it ends, and the plugin keeps resending until it does.

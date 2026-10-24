@@ -103,6 +103,10 @@ The plug chosen in **Gateway Power Plug** no longer exists in Indigo. Choose it 
 
 The gateway has not yet set its own clock, so the plugin uses the Mac's time for **Last Seen**. There is nothing to do.
 
+## The log says it could not read the Evohome timetable
+
+The controller did not answer every request for the rooms named, usually because the radio was busy or a room was out of range for a moment. The plugin tries again an hour later, up to three times a day, and the line says when: *in 1 hour*, or *tomorrow* after the third try. Before 1.18.0 it started the whole read again straight away, all day. To try at once, use **Read Evohome Timetables Now** in the plugin menu.
+
 ## Still stuck?
 
 Choose **Plugins → RAMSES ESP → Show Plugin Info**, copy the lines it writes to the Event Log, and post them on the [Indigo forum](https://forums.indigodomo.com) with a description of what you see. You can also [raise an issue on GitHub](https://github.com/Highsteads/RAMSES_ESP/issues).

@@ -6,8 +6,21 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5, Claude Opus 5.5
-# Date:        05-10-2026 22:50
-# Version:     1.17.0
+# Date:        24-10-2026 23:00
+# Version:     1.18.0
+#
+# v1.18.0 (24-10-2026): FIXES FROM THE 17-OCT JOINT REVIEW WITH EVOHOMECONTROL.
+#   (1) A change made by hand supersedes a command of ours still waiting: the pending command is
+#   dropped, so the retry no longer sends the old target back over a person's choice. "By hand"
+#   now means it matches none of our recent commands (_sent_history), so an earlier command of
+#   ours landing late is still ours and does not cancel the newer one. (2) Who changed a zone is
+#   judged against the last 2349 seen (_attr_seen), not against setpointHeat, which a 2309 may
+#   already have moved: a later 2349 with the same mode now still updates setpointSource and
+#   setpointChangedAt. (3) Set Temporary Setpoint returns {accepted, reason} to its caller, so
+#   EvoHomeControl knows a refused command was not sent. (4) setpointChangedAtEpoch (seconds
+#   since the epoch) beside setpointChangedAt, which the clocks going back cannot confuse; and a
+#   length in minutes is counted in real seconds, not wall-clock minutes. (8) A failed timetable
+#   read is tried again after an hour, up to three times a day, and the log says which.
 #
 # v1.17.0 (05-10-2026): A COMMAND IS CONFIRMED BY THE SAME COMMAND COMING BACK (external audit).
 #   HI-04: a 2309 broadcast confirms the temperature only; a pending command clears when a 2349
@@ -437,6 +450,8 @@ TIMETABLE_ASK_TIMEOUT  = 4.0           # seconds to wait for each fragment
 TIMETABLE_ASK_TRIES    = 3
 TIMETABLE_ASK_GAP      = 0.5           # seconds between requests, to be gentle on the radio
 TIMETABLE_STARTUP_WAIT = 120           # seconds after subscribing before a first-ever read
+TIMETABLE_RETRY_SECONDS = 3600         # after a failed read, try again this much later
+TIMETABLE_TRIES_A_DAY  = 3             # then wait until tomorrow
 
 MQTT_KEEPALIVE         = 60            # seconds for MQTT keepalive ping
 MQTT_RECONNECT_DELAY   = 60            # seconds between reconnect attempts
@@ -583,6 +598,7 @@ SETPOINT_MATCH_C        = 0.26
 # other change came from outside Indigo - the controller's screen, a valve's wheel or the
 # Evohome app. EvoHomeControl leaves a room changed by hand alone for a while.
 SOURCE_WINDOW_SECONDS   = 900
+SENT_HISTORY_MAX        = 6       # our recent commands kept per zone, to recognise a late echo
 SOURCE_INDIGO           = "indigo"
 SOURCE_TIMETABLE        = "timetable"
 SOURCE_MANUAL           = "manual"
@@ -681,6 +697,10 @@ class Plugin(indigo.PluginBase):
         # The last setpoint this plugin sent to each zone, and when: {zone: (setpoint, ts)}.
         # Kept after confirmation, to tell our own changes from ones made by hand.
         self._sent_log             = {}
+        # Our recent commands per zone, newest last (1.18.0), and the last mode report seen per
+        # zone: {zone: (mode, until, setpoint)}. Attribution is judged against these.
+        self._sent_history         = {}
+        self._attr_seen            = {}
 
         # Set here as well as in startup(): startup() returns early when paho is missing,
         # and the main loop reads this every pass.
@@ -694,6 +714,8 @@ class Plugin(indigo.PluginBase):
         self._timetable_replies   = queue.Queue()
         self._timetable_requested = False
         self._timetable_last_date = ""          # local date of the last completed read
+        self._timetable_retry_at  = 0.0         # epoch before which a failed read is not retried
+        self._timetable_tries     = ("", 0)     # (local date, failed reads that day)
         self._timetable_results   = None        # (results, failed) for the main loop; pending_lock
         self._stopping            = threading.Event()
 
@@ -1328,6 +1350,9 @@ class Plugin(indigo.PluginBase):
         """
         Clamp setpoint to valid range and publish a W 2349 permanent override.
 
+        Returns (True, "") once the command has left for the gateway, or (False, reason)
+        when it was refused and never sent (1.18.0), so a caller can tell the two apart.
+
         setpointHeat is NOT written here. Until 1.11.0 it was written the moment the
         command left, so a command lost on the radio - or sent while the gateway was
         offline - still showed as set, and anything reading setpointHeat (EvoHomeControl
@@ -1349,18 +1374,18 @@ class Plugin(indigo.PluginBase):
                 )
             else:
                 self.logger.debug(f"Cannot {action_str} setpoint for '{dev.name}' - {why}")
-            return
+            return False, why
         self._setpoint_refused.clear()
         if not self.mqtt_connected:
             self.logger.error(
                 f"Cannot {action_str} setpoint for '{dev.name}' - MQTT not connected"
             )
-            return
+            return False, "MQTT is not connected"
         if not self.gateway_id:
             self.logger.error(
                 f"Cannot {action_str} setpoint for '{dev.name}' - gateway not discovered yet"
             )
-            return
+            return False, "the gateway has not been found yet"
 
         setpoint_c = round(max(SETPOINT_MIN_C, min(float(setpoint_c), SETPOINT_MAX_C)), 2)
         zone_idx   = int(dev.address)
@@ -1368,7 +1393,7 @@ class Plugin(indigo.PluginBase):
 
         if not published:
             # _publish_setpoint already logged the specific error; nothing more to do
-            return
+            return False, "the command could not be published to the gateway"
 
         self._note_setpoint_sent(zone_idx, setpoint_c, time.time(), until)
 
@@ -1377,6 +1402,7 @@ class Plugin(indigo.PluginBase):
         self.logger.debug(
             f"'{dev.name}' (Zone {zone_idx}) setpoint {action_str} -> {setpoint_c:.1f} degC"
         )
+        return True, ""
 
     # --------------------------------------------------------------------------
     # Custom Actions (defined in Actions.xml)
@@ -1392,20 +1418,26 @@ class Plugin(indigo.PluginBase):
         a permanent override does. Call with executeAction("setTemporarySetpoint",
         deviceId=<zone>, props={"setpoint": "20.5", "minutes": "120"}) - the deviceId is
         required, as for any device action.
+
+        Returns {"accepted": bool, "reason": str} (1.18.0). executeAction hands that back
+        to a caller that waits, so EvoHomeControl can tell a refused command from a sent
+        one; "accepted" means it left for the gateway, not that the controller took it.
         """
+        def refused(reason):
+            return {"accepted": False, "reason": reason}
         if dev is None:
             try:
                 dev = indigo.devices[int(plugin_action.deviceId)]
             except Exception:
                 self.logger.error("Set Temporary Setpoint: no zone device given")
-                return
+                return refused("no zone device was given")
         props = plugin_action.props or {}
         try:
             setpoint_c = float(str(props.get("setpoint", "")).strip())
         except (ValueError, TypeError):
             self.logger.error(f"Set Temporary Setpoint for '{dev.name}': the setpoint "
                               f"'{props.get('setpoint', '')}' is not a number")
-            return
+            return refused("the setpoint is not a number")
         # An end time ("YYYY-MM-DD HH:MM") wins over a length (1.15.0). PROVEN LIVE
         # 29-09-2026: the controller accepts an end weeks or months ahead (14 Oct and
         # 1 June 2027 were both echoed back unchanged), which lets a seasonal hold run
@@ -1417,22 +1449,32 @@ class Plugin(indigo.PluginBase):
             except ValueError:
                 self.logger.error(f"Set Temporary Setpoint for '{dev.name}': the end time "
                                   f"'{end_text}' is not YYYY-MM-DD HH:MM")
-                return
+                return refused("the end time is not YYYY-MM-DD HH:MM")
             now = datetime.now()
             if not now < until <= now + timedelta(days=TEMP_OVERRIDE_MAX_DAYS):
                 self.logger.error(f"Set Temporary Setpoint for '{dev.name}': the end time "
                                   f"{end_text} must be in the next {TEMP_OVERRIDE_MAX_DAYS} days")
-                return
+                return refused(f"the end time must be in the next {TEMP_OVERRIDE_MAX_DAYS} days")
         else:
             try:
                 minutes = int(float(str(props.get("minutes", TEMP_OVERRIDE_DEFAULT_MINUTES)).strip()))
             except (ValueError, TypeError):
                 minutes = TEMP_OVERRIDE_DEFAULT_MINUTES
             minutes = max(TEMP_OVERRIDE_MIN_MINUTES, min(minutes, TEMP_OVERRIDE_MAX_MINUTES))
-            # Whole minutes only on the wire, so round the end UP to the next minute.
-            until = datetime.now().replace(second=0, microsecond=0)
-            until = until + timedelta(minutes=minutes + 1)
-        self._validate_and_publish_setpoint(dev, setpoint_c, "set", until=until)
+            until = self._end_after_minutes(time.time(), minutes)
+        ok, reason = self._validate_and_publish_setpoint(dev, setpoint_c, "set", until=until)
+        return {"accepted": bool(ok), "reason": reason}
+
+    @staticmethod
+    def _end_after_minutes(now_epoch, minutes):
+        """The local wall-clock end of a setting that lasts `minutes` from `now_epoch`,
+        rounded UP to the next whole minute (the wire carries whole minutes).
+
+        Counted in real seconds and only then turned into house time (1.18.0). Adding
+        minutes to the wall clock instead gave a two-hour setting started at 00:30 on the
+        night the clocks go back 181 minutes, and 61 on the night they go forward."""
+        end = (int(now_epoch // 60) + minutes + 1) * 60
+        return datetime.fromtimestamp(end)
 
     # --------------------------------------------------------------------------
     # Evohome timetables (1.13.0)
@@ -1472,11 +1514,15 @@ class Plugin(indigo.PluginBase):
         return newest
 
     @staticmethod
-    def _timetable_due(now, last_date, requested, listening_for):
+    def _timetable_due(now, last_date, requested, listening_for, retry_at=0.0, now_epoch=None):
         """Whether to start a read: on request, once a day at or after 03:15, or soon
-        after the very first start when nothing has ever been read."""
+        after the very first start when nothing has ever been read. After a failed read,
+        not before `retry_at` (1.18.0): a failure used to start the whole read again on
+        the next pass, all day."""
         if requested:
             return True
+        if retry_at and (time.time() if now_epoch is None else now_epoch) < retry_at:
+            return False
         if not last_date:
             return listening_for >= TIMETABLE_STARTUP_WAIT
         today = now.strftime("%Y-%m-%d")
@@ -1493,7 +1539,8 @@ class Plugin(indigo.PluginBase):
         if not self._timetable_last_date:
             self._timetable_last_date = self._timetable_last_read_date()
         if not self._timetable_due(now, self._timetable_last_date, self._timetable_requested,
-                                   time.time() - self._rx_listen_since):
+                                   time.time() - self._rx_listen_since,
+                                   retry_at=self._timetable_retry_at, now_epoch=time.time()):
             return
         if not self._timetable_lock.acquire(blocking=False):
             return
@@ -1612,10 +1659,23 @@ class Plugin(indigo.PluginBase):
                 dev = self._find_zone_device(zone)
                 names.append(f"'{dev.name}'" if dev is not None else f"zone {zone}")
             joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+            today = now.strftime("%Y-%m-%d")
+            day, tries = self._timetable_tries
+            tries = tries + 1 if day == today else 1
+            self._timetable_tries = (today, tries)
+            if tries >= TIMETABLE_TRIES_A_DAY:
+                self._timetable_last_date = today
+                self._timetable_retry_at  = 0.0
+                when = "tomorrow"
+            else:
+                self._timetable_retry_at = time.time() + TIMETABLE_RETRY_SECONDS
+                when = f"in {TIMETABLE_RETRY_SECONDS // 3600} hour{'s' if TIMETABLE_RETRY_SECONDS >= 7200 else ''}"
             self.logger.warning(f"Could not read the Evohome timetable for {joined}. "
-                                f"The plugin tries again tomorrow.")
+                                f"The plugin tries again {when}.")
         else:
             self._timetable_last_date = now.strftime("%Y-%m-%d")
+            self._timetable_retry_at  = 0.0
+            self._timetable_tries     = ("", 0)
         self.logger.debug(f"Read {len(results)} Evohome timetable(s); "
                           f"{len(changed)} changed, {len(failed)} could not be read")
 
@@ -2016,6 +2076,10 @@ class Plugin(indigo.PluginBase):
         The sent log keeps the whole command (1.17.0), so a change at the same
         temperature but a different mode or end time is not mistaken for ours."""
         self._sent_log[zone_idx] = (setpoint_c, now, until)
+        recent = [c for c in self._sent_history.get(zone_idx, [])
+                  if now - c[1] <= SOURCE_WINDOW_SECONDS]
+        recent.append((setpoint_c, now, until))
+        self._sent_history[zone_idx] = recent[-SENT_HISTORY_MAX:]
         with self.pending_lock:
             rec = self.pending_setpoints.get(zone_idx)
             if rec and abs(rec["sp"] - setpoint_c) < 0.01 and rec.get("until") == until:
@@ -2670,6 +2734,15 @@ class Plugin(indigo.PluginBase):
         controller_id = data.get("controller_id", "")
         ts            = self._format_ts(data.get("ts", ""))
         self._confirm_setpoint(zone_idx, setpoint_c, data)
+        # Before this 2309 moves setpointHeat, keep what the zone showed as the baseline the
+        # next 2349 is judged against, if no 2349 has been seen yet (1.18.0, review finding 2).
+        if zone_idx not in self._attr_seen:
+            try:
+                seen_sp = float(dev.states.get("setpointHeat", ""))
+            except (TypeError, ValueError):
+                seen_sp = None
+            self._attr_seen[zone_idx] = (dev.states.get("zoneMode", ""),
+                                         dev.states.get("zoneOverrideUntil", "") or "", seen_sp)
 
         try:
             state_updates = [
@@ -2687,18 +2760,25 @@ class Plugin(indigo.PluginBase):
             self.logger.error(f"Error updating Zone {zone_idx} setpoint state: {exc}")
 
     @staticmethod
-    def _change_source(new_setpoint, new_mode, sent, now, new_until=""):
+    def _change_source(new_setpoint, new_mode, sent, now, new_until="", history=()):
         """Who made a change the controller has just reported: this plugin, the
         timetable, or someone outside Indigo.
 
         Ours only when the temperature, the mode AND the end time all match a command
         sent within the window (1.17.0). Matching the temperature alone called a person
         who held a room for good at the temperature Indigo had just set "indigo", and
-        EvoHomeControl then overwrote them."""
-        if sent is not None and new_setpoint is not None:
-            sent_sp, sent_ts, sent_until = (tuple(sent) + (None,))[:3]
+        EvoHomeControl then overwrote them. Any of our recent commands counts, not only
+        the latest (1.18.0): an earlier one of ours can land after we sent a newer one."""
+        candidates = list(history or ())
+        if sent is not None:
+            candidates.append(sent)
+        for cmd in candidates:
+            sent_sp, sent_ts, sent_until = (tuple(cmd) + (None,))[:3]
             want_mode, want_until = Plugin._command_mode(sent_until)
-            if (abs(sent_sp - new_setpoint) < SETPOINT_MATCH_C
+            # A mode report that carries no temperature (raw 0x7FFF) is judged on its mode
+            # and end time alone; it cannot contradict our temperature (1.18.0).
+            temp_ok = new_setpoint is None or abs(sent_sp - new_setpoint) < SETPOINT_MATCH_C
+            if (temp_ok
                     and now - sent_ts <= SOURCE_WINDOW_SECONDS
                     and new_mode == want_mode
                     and (new_until or "") == want_until):
@@ -2712,19 +2792,46 @@ class Plugin(indigo.PluginBase):
         the zone is doing, or [] when it only repeats what the device already shows."""
         new_mode = data.get("mode", "schedule")
         new_sp   = data.get("setpoint")
-        new_end  = data.get("until", "")
-        try:
-            old_sp = float(dev.states.get("setpointHeat", ""))
-        except (TypeError, ValueError):
-            old_sp = None
-        changed = (new_mode != dev.states.get("zoneMode", "")
-                   or new_end != (dev.states.get("zoneOverrideUntil", "") or "")
+        new_end  = data.get("until", "") or ""
+        # Judged against the last mode report, not against setpointHeat: a 2309 between two
+        # 2349s may already have moved setpointHeat, and then a real change looked like a
+        # repeat and kept the old source and time (1.18.0, review finding 2).
+        seen = self._attr_seen.get(zone_idx)
+        if seen is None:
+            try:
+                seen_sp = float(dev.states.get("setpointHeat", ""))
+            except (TypeError, ValueError):
+                seen_sp = None
+            seen = (dev.states.get("zoneMode", ""),
+                    dev.states.get("zoneOverrideUntil", "") or "", seen_sp)
+        old_mode, old_end, old_sp = seen
+        self._attr_seen[zone_idx] = (new_mode, new_end, new_sp if new_sp is not None else old_sp)
+        changed = (new_mode != old_mode
+                   or new_end != old_end
                    or (new_sp is not None and (old_sp is None or abs(new_sp - old_sp) > 0.05)))
         if not changed:
             return []
-        source = self._change_source(new_sp, new_mode, self._sent_log.get(zone_idx), time.time(),
-                                     new_end)
+        now = time.time()
+        recent = list(self._sent_history.get(zone_idx, ()))
+        if (new_mode == old_mode and new_end == old_end and new_sp is not None
+                and any(abs(c[0] - new_sp) < SETPOINT_MATCH_C
+                        and now - c[1] <= SOURCE_WINDOW_SECONDS for c in recent)):
+            # Only the temperature moved, to one we sent: our command has landed before the
+            # mode report caught up. Ours, and still waiting for that mode report (1.18.0).
+            source = SOURCE_INDIGO
+        else:
+            source = self._change_source(new_sp, new_mode, self._sent_log.get(zone_idx), now,
+                                         new_end, recent)
         if source == SOURCE_MANUAL:
+            # A change by hand supersedes any command of ours still waiting for this zone:
+            # left pending, the retry would send the old target back over it (1.18.0, review
+            # finding 1). "By hand" already excludes every recent command of ours, so a late
+            # echo of an earlier one does not cancel the newer one. That includes the common
+            # case of a dial turned while ours was pending, which keeps our end time.
+            with self.pending_lock:
+                if self.pending_setpoints.pop(zone_idx, None) is not None:
+                    self.logger.debug(f"Zone {zone_idx}: our waiting command was dropped, "
+                                      f"superseded by a change made by hand")
             if new_mode == "permanent override":
                 how = "until it is changed back"
             elif new_end:
@@ -2738,8 +2845,9 @@ class Plugin(indigo.PluginBase):
             what = f"{new_sp:g} degrees" if new_sp is not None else f"'{new_mode}'"
             self.logger.info(f"{dev.name} was set to {what} {how} from outside Indigo "
                              f"(the Evohome controller, the valve or the app).")
-        return [{"key": "setpointSource",    "value": source},
-                {"key": "setpointChangedAt", "value": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}]
+        return [{"key": "setpointSource",         "value": source},
+                {"key": "setpointChangedAt",      "value": datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S")},
+                {"key": "setpointChangedAtEpoch", "value": int(now)}]
 
     def _apply_mode_update(self, zone_idx, data):
         """Update zoneMode (and setpointHeat when known) from a 2349 message.
