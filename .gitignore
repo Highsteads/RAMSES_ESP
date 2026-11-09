@@ -35,3 +35,6 @@ IndigoSecrets.py
 
 # Test runner artefacts
 .pytest_cache/
+
+# Local cross-assistant notes
+AGENTS.md

@@ -47,7 +47,7 @@ When you set a zone's temperature from Indigo, the plugin sends it as a **perman
 
 A temperature is always kept between 8 °C and 35 °C. The Evohome controller will not go below about 8 °C, so the plugin does not either, which keeps Indigo showing the same figure the controller uses.
 
-The device shows the new setpoint once the controller reports it back, usually within a few minutes. Until then the plugin sends it again every minute, three times in all, and if the controller has still not reported it after five minutes the Event Log says so. Nothing is sent while the gateway is offline, because it could never arrive: the Event Log says so once for each zone.
+The device shows the new setpoint once the controller reports it back, usually within a few minutes. Settings for several zones go out one every five seconds, so the controller is not sent a burst it can miss. Until the controller reports a setting back the plugin sends it again every 15 seconds, five times in all, and if the controller has still not reported it after five minutes the Event Log says so. Nothing is sent while the gateway is offline, because it could never arrive: the Event Log says so once for each zone.
 
 ## The time on readings
 

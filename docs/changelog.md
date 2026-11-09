@@ -7,6 +7,12 @@ nav_order: 12
 
 The newest version is at the top.
 
+## 1.18.1 — 9 November 2026
+
+- **Several zones at once all arrive.** When EvoHome Heating Controller set five rooms at once, for a boost, the plugin sent all five commands within a tenth of a second. The controller confirmed some at once and others only after several minutes. The plugin now sends one command every five seconds, and new settings go before repeats, so five rooms take about 20 seconds.
+- **Quicker repeats.** A setting the controller has not confirmed is sent again every 15 seconds, five times in all, instead of every minute three times. The warning still comes after five minutes, and a renewal at the same temperature does not restart that clock.
+- **Set Temperature for a While from a script** now answers *accepted* once the setting is queued to go, rather than once it has left.
+
 ## 1.18.0 — 24 October 2026
 
 Fixes from a review of this plugin and EvoHome Heating Controller together.

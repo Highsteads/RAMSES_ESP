@@ -6,8 +6,15 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5, Claude Opus 5.5
-# Date:        24-10-2026 23:00
-# Version:     1.18.0
+# Date:        09-11-2026 15:31
+# Version:     1.18.1
+#
+# v1.18.1 (09-11-2026): PACED SETPOINT DELIVERY. A boost sent five zones' W 2349 22 ms apart and
+#   the controller confirmed some only minutes later (Living Room Front, 07-Nov). Setpoints now go
+#   into a per-zone queue (latest intent wins) and leave at most one every SETPOINT_SEND_GAP_SECONDS,
+#   retries included, unsent before retries. Retries every 15 s, five sends, give-up at 300 s from
+#   the first send, which a renewal at the same temperature does not reset. A confirmation only
+#   counts if heard after the command actually left. "Accepted" now means queued.
 #
 # v1.18.0 (24-10-2026): FIXES FROM THE 17-OCT JOINT REVIEW WITH EVOHOMECONTROL.
 #   (1) A change made by hand supersedes a command of ours still waiting: the pending command is
@@ -586,8 +593,10 @@ GATEWAY_DEAF_SECONDS   = 900
 # reported after SETPOINT_GIVE_UP_SECONDS (more than one 3-minute broadcast) is warned
 # about once. A report within SETPOINT_MATCH_C of what was sent counts - half a step of
 # the controller's 0.5 degC resolution, so an old value one step away never does.
-SETPOINT_RESEND_SECONDS = 60
-SETPOINT_MAX_SENDS      = 3
+SETPOINT_SEND_GAP_SECONDS = 5
+SETPOINT_QUEUE_MAX_SECONDS = 120
+SETPOINT_RESEND_SECONDS = 15
+SETPOINT_MAX_SENDS      = 5
 SETPOINT_GIVE_UP_SECONDS = 300
 SETPOINT_FORGET_SECONDS = 1800
 SETPOINT_MATCH_C        = 0.26
@@ -692,6 +701,8 @@ class Plugin(indigo.PluginBase):
         # Setpoints sent but not yet reported back by the controller.
         # {zone_idx: {"sp": float, "first": ts, "last": ts, "sends": int}}; pending_lock.
         self.pending_setpoints     = {}
+        self._setpoint_tx_lock     = threading.RLock()
+        self._last_setpoint_send   = None
         # Zones already told they cannot be set during this outage, so it is said once.
         self._setpoint_refused     = set()
         # The last setpoint this plugin sent to each zone, and when: {zone: (setpoint, ts)}.
@@ -990,12 +1001,6 @@ class Plugin(indigo.PluginBase):
                 self._relay_pass_error = str(exc)
                 self.logger.warning(f"Boiler relay update failed: {exc}")
 
-        # Setpoints the controller has not reported back yet: resend, or give up.
-        try:
-            self._retry_setpoints(time.time())
-        except Exception as exc:
-            self.logger.warning(f"Setpoint retry pass failed: {exc}")
-
         # Apply zone name updates (store state + auto-rename device)
         for zone_idx, name in zone_names.items():
             try:
@@ -1020,6 +1025,12 @@ class Plugin(indigo.PluginBase):
                         self._apply_temp_update(zone_idx, data)
             except Exception as exc:
                 self.logger.error(f"Error applying update for Zone {zone_idx}: {exc}")
+
+        # Setpoints the controller has not reported back yet: resend, or give up.
+        try:
+            self._retry_setpoints(time.time())
+        except Exception as exc:
+            self.logger.warning(f"Setpoint retry pass failed: {exc}")
 
         # --- One-time zone name request ---
         # Send RQ 0004 for all zones once we have MQTT + a known controller_id.
@@ -1350,7 +1361,7 @@ class Plugin(indigo.PluginBase):
         """
         Clamp setpoint to valid range and publish a W 2349 permanent override.
 
-        Returns (True, "") once the command has left for the gateway, or (False, reason)
+        Returns (True, "") once the command is accepted for paced delivery, or (False, reason)
         when it was refused and never sent (1.18.0), so a caller can tell the two apart.
 
         setpointHeat is NOT written here. Until 1.11.0 it was written the moment the
@@ -1389,13 +1400,9 @@ class Plugin(indigo.PluginBase):
 
         setpoint_c = round(max(SETPOINT_MIN_C, min(float(setpoint_c), SETPOINT_MAX_C)), 2)
         zone_idx   = int(dev.address)
-        published  = self._publish_setpoint(zone_idx, setpoint_c, until)
-
-        if not published:
-            # _publish_setpoint already logged the specific error; nothing more to do
-            return False, "the command could not be published to the gateway"
-
-        self._note_setpoint_sent(zone_idx, setpoint_c, time.time(), until)
+        accepted = self._queue_setpoint(zone_idx, setpoint_c, until)
+        if not accepted:
+            return False, "the command could not be queued for the gateway"
 
         # Debug only: the EvoHome script already logs the room action at INFO level.
         # Suppress at INFO to keep the Indigo event log clean during normal operation.
@@ -1421,7 +1428,7 @@ class Plugin(indigo.PluginBase):
 
         Returns {"accepted": bool, "reason": str} (1.18.0). executeAction hands that back
         to a caller that waits, so EvoHomeControl can tell a refused command from a sent
-        one; "accepted" means it left for the gateway, not that the controller took it.
+        one; "accepted" means queued for paced delivery, not that the controller took it.
         """
         def refused(reason):
             return {"accepted": False, "reason": reason}
@@ -2069,6 +2076,29 @@ class Plugin(indigo.PluginBase):
         # Cheap, and rules out our own subscription having been lost.
         self._resubscribe_to_gateway()
 
+    def _queue_setpoint(self, zone_idx, setpoint_c, until=None):
+        """Accept the latest intent per zone; the worker spaces physical sends.
+
+        A repeated renewal of an unconfirmed timed target keeps its original command
+        and deadline. Otherwise a five-minute control cycle can erase every failure.
+        """
+        now = time.time()
+        with self._setpoint_tx_lock:
+            with self.pending_lock:
+                old = self.pending_setpoints.get(zone_idx)
+                same = old and abs(old["sp"] - setpoint_c) < 0.01
+                if same and old.get("until") == until:
+                    return True
+                budget_first = (old.get("budget_first") or old.get("first")) if same else None
+                self.pending_setpoints[zone_idx] = {
+                    "sp": setpoint_c, "until": until, "first": None, "last": None,
+                    "sends": min(old["sends"], SETPOINT_MAX_SENDS - 1) if same else 0, "sp_ok": False, "queued": now,
+                    "budget_first": budget_first}
+            self._retry_setpoints(now)
+            # A failed immediate publish removes the record and returns a refusal.
+            with self.pending_lock:
+                return zone_idx in self.pending_setpoints
+
     def _note_setpoint_sent(self, zone_idx, setpoint_c, now, until=None):
         """Record a command waiting for the controller to report it. A new value for
         the zone replaces the old one; a repeat of the same value counts as a resend.
@@ -2083,12 +2113,16 @@ class Plugin(indigo.PluginBase):
         with self.pending_lock:
             rec = self.pending_setpoints.get(zone_idx)
             if rec and abs(rec["sp"] - setpoint_c) < 0.01 and rec.get("until") == until:
-                rec["last"]  = now
+                rec["last"] = now
                 rec["sends"] += 1
+                if rec["first"] is None:
+                    rec["first"] = now
+                if rec.get("budget_first") is None:
+                    rec["budget_first"] = now
             else:
                 self.pending_setpoints[zone_idx] = {
                     "sp": setpoint_c, "first": now, "last": now, "sends": 1, "until": until,
-                    "sp_ok": False}
+                    "sp_ok": False, "budget_first": now}
 
     @staticmethod
     def _command_mode(until):
@@ -2103,6 +2137,8 @@ class Plugin(indigo.PluginBase):
         """A report counts only when it was heard after the command first left. A frame
         heard earlier can still be waiting in pending_updates when the command goes.
         "rx" stamps a 2349 (mode) frame, "sp_rx" a 2309 (setpoint) frame."""
+        if rec.get("first") is None:
+            return False
         rx = data.get(key) if data else None
         return rx is None or rx >= rec["first"]
 
@@ -2112,7 +2148,7 @@ class Plugin(indigo.PluginBase):
         pending until a 2349 reports the same mode and end time (1.17.0). EvoHomeControl
         renews a timed setting at the same temperature, and the 2309 broadcast used to
         clear a renewal that had never landed."""
-        with self.pending_lock:
+        with self._setpoint_tx_lock, self.pending_lock:
             rec = self.pending_setpoints.get(zone_idx)
             if not rec or abs(rec["sp"] - reported_c) >= SETPOINT_MATCH_C:
                 return
@@ -2126,7 +2162,7 @@ class Plugin(indigo.PluginBase):
         """The controller's 2349 reported this zone's mode: clear the pending command
         when it reports the same command back - mode and end time always, and the
         temperature too, or a 2309 since the command has already reported it."""
-        with self.pending_lock:
+        with self._setpoint_tx_lock, self.pending_lock:
             rec = self.pending_setpoints.get(zone_idx)
             if not rec or not self._heard_after(rec, data):
                 return
@@ -2144,28 +2180,40 @@ class Plugin(indigo.PluginBase):
                           f"{want_mode}{' until ' + want_until if want_until else ''}")
 
     def _retry_setpoints(self, now):
-        """Main thread. Resend an unconfirmed command, give up on one that never takes,
-        and forget one left over from a long outage (the caller will send afresh)."""
+        """Send at most one command per gap, including retries; never block a callback.
+
+        One pending record owns each zone's latest intent. Unsent commands take priority
+        over retries. Confirmation only counts after a command has actually left.
+        """
+        with self._setpoint_tx_lock:
+            self._send_next_setpoint(now)
+
+    def _send_next_setpoint(self, now):
         with self.pending_lock:
             items = {z: dict(r) for z, r in self.pending_setpoints.items()}
             usable = self.gateway_online is not False and not self.gateway_deaf
+        ready = []
         for zone_idx, rec in items.items():
-            age = now - rec["first"]
-            if age >= SETPOINT_FORGET_SECONDS:
+            first = rec.get("first")
+            budget_first = rec.get("budget_first")
+            age = now - (budget_first if budget_first is not None else (first if first is not None else rec["queued"]))
+            dev = self._find_zone_device(zone_idx)
+            if dev is None or not getattr(dev, "enabled", True):
                 with self.pending_lock:
                     self.pending_setpoints.pop(zone_idx, None)
-                self.logger.debug(f"Zone {zone_idx}: unconfirmed setpoint forgotten")
+                self.logger.debug(f"Zone {zone_idx}: waiting setpoint cancelled because the zone is disabled or gone")
                 continue
-            if not usable or not self.mqtt_connected:
+            # Time in the queue counts from when this intent was queued, not from the
+            # carried-over give-up clock, or a renewal is dropped before it is ever sent.
+            queued_expired = (first is None
+                              and now - rec.get("queued", now) >= SETPOINT_QUEUE_MAX_SECONDS)
+            expired = rec.get("until") is not None and rec["until"] <= datetime.now()
+            if queued_expired or expired or age >= SETPOINT_FORGET_SECONDS:
+                with self.pending_lock:
+                    self.pending_setpoints.pop(zone_idx, None)
+                self.logger.warning(f"Zone {zone_idx}: waiting setpoint expired without confirmation")
                 continue
-            if rec["sends"] < SETPOINT_MAX_SENDS:
-                if now - rec["last"] >= SETPOINT_RESEND_SECONDS:
-                    if self._publish_setpoint(zone_idx, rec["sp"], rec.get("until")):
-                        self._note_setpoint_sent(zone_idx, rec["sp"], now, rec.get("until"))
-                        self.logger.debug(f"Zone {zone_idx}: setpoint resent "
-                                          f"(attempt {rec['sends'] + 1})")
-                continue
-            if age >= SETPOINT_GIVE_UP_SECONDS:
+            if budget_first is not None and age >= SETPOINT_GIVE_UP_SECONDS:
                 with self.pending_lock:
                     self.pending_setpoints.pop(zone_idx, None)
                 dev = self._find_zone_device(zone_idx)
@@ -2173,8 +2221,28 @@ class Plugin(indigo.PluginBase):
                 self.logger.warning(
                     f"Evohome has not confirmed {rec['sp']:.1f} degC for '{name}' after "
                     f"{rec['sends']} attempts over {age / 60:.0f} minutes. The controller "
-                    f"may not have received it."
-                )
+                    f"may not have received it.")
+                continue
+            if rec["sends"] < SETPOINT_MAX_SENDS and (
+                    first is None or now - rec["last"] >= SETPOINT_RESEND_SECONDS):
+                ready.append((rec["sends"] > 0, rec.get("last") or rec.get("queued", 0), zone_idx, rec))
+        if not usable or not self.mqtt_connected or not ready:
+            return
+        # The main loop runs every MAIN_LOOP_SLEEP seconds, so allow a second of slack:
+        # a strict 5 s test against a 5 s loop skips every other pass and doubles the gap.
+        if (self._last_setpoint_send is not None
+                and now - self._last_setpoint_send < SETPOINT_SEND_GAP_SECONDS - 1):
+            return
+        _, _, zone_idx, rec = min(ready)
+        if self._publish_setpoint(zone_idx, rec["sp"], rec.get("until")):
+            self._last_setpoint_send = now
+            self._note_setpoint_sent(zone_idx, rec["sp"], now, rec.get("until"))
+            if rec["sends"]:
+                self.logger.debug(f"Zone {zone_idx}: setpoint resent (attempt {rec['sends'] + 1})")
+        else:
+            with self.pending_lock:
+                self.pending_setpoints.pop(zone_idx, None)
+            self.logger.warning(f"Zone {zone_idx}: queued setpoint could not be sent")
 
     def _set_gateway_id(self, gw_id):
         """Store gateway ID and queue persist to prefs (done by main thread). Subscribe to rx."""
@@ -2828,8 +2896,12 @@ class Plugin(indigo.PluginBase):
             # finding 1). "By hand" already excludes every recent command of ours, so a late
             # echo of an earlier one does not cancel the newer one. That includes the common
             # case of a dial turned while ours was pending, which keeps our end time.
-            with self.pending_lock:
-                if self.pending_setpoints.pop(zone_idx, None) is not None:
+            with self._setpoint_tx_lock, self.pending_lock:
+                waiting = self.pending_setpoints.get(zone_idx)
+                accepted_at = (waiting.get("queued") or waiting.get("first")) if waiting else None
+                report_at = data.get("rx", now)
+                if waiting and accepted_at is not None and report_at >= accepted_at:
+                    self.pending_setpoints.pop(zone_idx, None)
                     self.logger.debug(f"Zone {zone_idx}: our waiting command was dropped, "
                                       f"superseded by a change made by hand")
             if new_mode == "permanent override":

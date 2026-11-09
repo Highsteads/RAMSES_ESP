@@ -20,7 +20,7 @@ The plugin's **Set Temperature for a While** action, on a zone, sets it to the t
 
 Instead of a number of minutes you can give an end date and time, as `YYYY-MM-DD HH:MM`, up to a year ahead. If both are filled in, the end date wins. An end in the past or more than a year away is refused with a line in the Event Log, and nothing is sent. From a script the property is `until`, alongside `setpoint`. A length in minutes is counted in real time, so a two-hour setting started on the night the clocks change still lasts two hours.
 
-Called from a script with `executeAction`, the action answers `{"accepted": True or False, "reason": "..."}` (1.18.0). *Accepted* means the command left for the gateway; *refused* gives the reason, such as *the gateway is offline*, and nothing was sent. EvoHome Heating Controller uses this to know a refused setting was never sent.
+Called from a script with `executeAction`, the action answers `{"accepted": True or False, "reason": "..."}` (1.18.0). *Accepted* means the command is queued to go to the gateway, within a few seconds (1.18.1); *refused* gives the reason, such as *the gateway is offline*, and nothing was sent. EvoHome Heating Controller uses this to know a refused setting was never sent.
 
 A new temperature can only be sent once the plugin has found the gateway, is connected to the broker, and has heard at least one reading from the Evohome controller. If any of those is missing, the Event Log says which, and nothing is sent.
 

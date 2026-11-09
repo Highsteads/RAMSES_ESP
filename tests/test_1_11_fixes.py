@@ -245,13 +245,13 @@ def test_an_unconfirmed_setpoint_is_resent_then_given_up(sending):
     plug, zone = sending
     plug._validate_and_publish_setpoint(zone, 20.5, "set")
     t0 = plug.pending_setpoints[3]["first"]
-    plug._retry_setpoints(t0 + 30)
+    plug._retry_setpoints(t0 + 10)
     assert plug.mqtt_client.publish.call_count == 1, "not yet"
-    plug._retry_setpoints(t0 + 61)
-    plug._retry_setpoints(t0 + 122)
-    assert plug.mqtt_client.publish.call_count == 3
+    for offset in (16, 32, 48, 64):
+        plug._retry_setpoints(t0 + offset)
+    assert plug.mqtt_client.publish.call_count == 5
     plug._retry_setpoints(t0 + 200)
-    assert plug.mqtt_client.publish.call_count == 3, "three sends in all"
+    assert plug.mqtt_client.publish.call_count == 5, "five sends in all"
     assert plug.logger.warning.call_count == 0
     plug._retry_setpoints(t0 + 301)
     assert 3 not in plug.pending_setpoints
