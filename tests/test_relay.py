@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 
 import pytest
+from unittest.mock import MagicMock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SP = os.path.abspath(os.path.join(_HERE, "..", "RAMSES_ESP.indigoPlugin",
@@ -299,6 +300,13 @@ def fake(plug, rp, monkeypatch):
         created.append(dev)
         return dev
 
+    # pytest 9.2: undoing a patch on an attribute a MagicMock made on demand
+    # deletes it, and the next test finds nothing to patch. Assigning both
+    # first puts them in the mock's own dict, so undo restores them instead.
+    if isinstance(rp.indigo, MagicMock):
+        rp.indigo.devices = rp.indigo.devices
+    if isinstance(rp.indigo.device, MagicMock):
+        rp.indigo.device.create = rp.indigo.device.create
     monkeypatch.setattr(rp.indigo, "devices", devices)
     monkeypatch.setattr(rp.indigo.device, "create", create)
     monkeypatch.setattr(plug, "_get_or_create_folder", lambda _name: 1)

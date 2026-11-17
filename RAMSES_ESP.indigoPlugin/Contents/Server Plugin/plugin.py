@@ -6,7 +6,7 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5, Claude Opus 5.5, Claude Fable 5.2
-# Date:        17-11-2026 20:40
+# Date:        17-11-2026 22:20
 # Version:     1.18.2
 #
 # v1.18.2 (17-11-2026): A PUSHOVER ALERT THAT DOES NOT GO IS TRIED AGAIN. On 17-Nov the internet
