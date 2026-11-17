@@ -11,6 +11,8 @@ While the gateway is connected, it tells the broker it is online. If it drops of
 
 If you have the Pushover plugin installed and enabled, the plugin sends a **RAMSES Gateway Offline** alert once the gateway has been offline for five minutes, and a **RAMSES Gateway Restored** alert when it comes back. A gateway that drops out and returns within five minutes sends nothing. There is no setting for this — it is always on when the Pushover plugin is there, and the log says so when it is not.
 
+An alert that cannot be sent, because the internet is down or the Pushover plugin has stopped, is not lost. The plugin tries it again once a minute for up to half an hour, and writes one line in the Event Log when it first fails and one when it is sent or given up on. The same goes for the watchdog's alerts below. If the gateway comes back before the offline alert got through, the restored alert says that the offline one could not be sent, and when it was raised. Alerts still waiting are forgotten if the plugin is restarted.
+
 ## The power-cycle watchdog
 
 The gateway's firmware sometimes stops trying to rejoin the Wi-Fi after a failed attempt, and then it stays offline until its power is switched off and on. I found this out when a Wi-Fi change knocked mine off the network and my heating readings stopped for ten days.

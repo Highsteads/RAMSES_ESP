@@ -7,6 +7,13 @@ nav_order: 12
 
 The newest version is at the top.
 
+## 1.18.2 — 17 November 2026
+
+- **A phone alert that cannot be sent is tried again.** On 17 November the internet was down for some minutes while a router was swapped, the gateway dropped out, and the alert saying so was tried once and lost. An alert that does not go is now kept and tried again once a minute for up to half an hour. After that the plugin gives up on it and says so in the Event Log. Only the newest alert of each kind is kept, so a stale one is never sent after a newer one.
+- **The restored alert owns up.** If the gateway comes back before the offline alert got through, the restored alert adds a line such as *The alert that it had gone offline, raised at 7:33pm, could not be sent.*
+- **A plainer log line.** The Event Log used to say *Pushover send failed: unable to convert python exception*. It now says the Pushover plugin could not send the alert, most often because there is no internet, and that the plugin will keep trying. It is a warning, not an error, and it appears once, not once a try.
+- **A Pushover plugin that is enabled but not running** now counts as an alert that did not go, and is tried again in the same way.
+
 ## 1.18.1 — 9 November 2026
 
 - **Several zones at once all arrive.** When EvoHome Heating Controller set five rooms at once, for a boost, the plugin sent all five commands within a tenth of a second. The controller confirmed some at once and others only after several minutes. The plugin now sends one command every five seconds, and new settings go before repeats, so five rooms take about 20 seconds.

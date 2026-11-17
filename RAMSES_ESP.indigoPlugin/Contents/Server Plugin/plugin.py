@@ -5,9 +5,18 @@
 #              Connects to RAMSES-ESP wireless HVAC gateway via MQTT, auto-discovers
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
-# Author:      CliveS & Claude Opus 5, Claude Opus 5.5
-# Date:        09-11-2026 15:31
-# Version:     1.18.1
+# Author:      CliveS & Claude Opus 5, Claude Opus 5.5, Claude Fable 5.2
+# Date:        17-11-2026 20:40
+# Version:     1.18.2
+#
+# v1.18.2 (17-11-2026): A PUSHOVER ALERT THAT DOES NOT GO IS TRIED AGAIN. On 17-Nov the internet
+#   was down while the router was swapped; the "gateway offline" alert was tried once, failed
+#   with Indigo's "unable to convert python exception" and was lost. Alerts now go through
+#   ramses_alerts.AlertOutbox: one waiting per sender (gateway, watchdog), a newer one replaces
+#   it, retried from the main loop at most once a minute and dropped after 30 minutes with one
+#   WARNING. A "restored" alert says when the "offline" one before it could not be sent. The
+#   log line is plain English and a WARNING, and a Pushover plugin that is enabled but not
+#   running counts as a failure to retry.
 #
 # v1.18.1 (09-11-2026): PACED SETPOINT DELIVERY. A boost sent five zones' W 2349 22 ms apart and
 #   the controller confirmed some only minutes later (Living Room Front, 07-Nov). Setpoints now go
@@ -441,6 +450,7 @@ from ramses_relay import (          # noqa: E402
 )
 from ramses_relay import describe as describe_relay   # noqa: E402
 import ramses_timetable as timetable                  # noqa: E402
+from ramses_alerts import AlertOutbox                 # noqa: E402
 
 # ==============================================================================
 # CONSTANTS
@@ -735,6 +745,8 @@ class Plugin(indigo.PluginBase):
         self.gateway_alert_sent    = False  # True after offline Pushover sent; reset on restore
         self.gateway_offline_since = None   # time.time() when offline first detected; None if not offline
         self.pending_gateway_alert = None   # "restored" alert — drained by runConcurrentThread
+        # Pushover alerts that could not be sent, kept to try again (main thread only).
+        self.alert_outbox          = AlertOutbox()
 
         # Power-cycle watchdog state (prefs loaded in _read_prefs; main thread only).
         # The off/on cycle runs inside a SINGLE main-loop tick (see _power_cycle_plug) with a
@@ -974,6 +986,9 @@ class Plugin(indigo.PluginBase):
 
         # Power-cycle watchdog — recover a gateway that stays offline
         self._watchdog_tick(offline_since)
+
+        # Try again any Pushover alert that could not be sent (no internet, say).
+        self._retry_alerts(time.time())
 
         # Whether the gateway itself is alive, onto every zone device. Cheap: a value
         # that has not moved writes nothing.
@@ -3056,20 +3071,78 @@ class Plugin(indigo.PluginBase):
             title    = "RAMSES Gateway Restored"
             message  = f"RAMSES ESP gateway {self.gateway_id or 'unknown'} is back online"
             priority = "0"   # normal
+        self._send_pushover("gateway", "Gateway", title, message, priority, kind=status)
+
+    # ------------------------------------------------------------------
+    # Pushover sending, with a second chance (17-Nov-2026)
+    # ------------------------------------------------------------------
+
+    def _send_pushover(self, sender, tag, title, message, priority="0", kind=""):
+        """Send a Pushover alert now, and keep it to try again if it does not go.
+
+        One alert waits per sender; a newer one replaces it. Main thread only.
+        """
+        self.alert_outbox.queue(sender, title, message, priority, time.time(), kind=kind)
+        self._attempt_pushover(sender, tag)
+
+    def _attempt_pushover(self, sender, tag):
+        """One try at the alert waiting for this sender. Logs only what the outbox says to."""
+        waiting = self.alert_outbox.pending.get(sender)
+        if waiting is None:
+            return
+        outcome, reason = self._pushover_try(waiting)
+        if outcome == "absent":
+            self.alert_outbox.discard(sender)
+            self.logger.warning(
+                f"[{tag}] Pushover not enabled — alert not sent: {waiting['title']}")
+            return
+        line = self.alert_outbox.record(sender, outcome == "sent", time.time(), reason)
+        self._log_alert_line(tag, line)
+
+    def _pushover_try(self, waiting):
+        """Hand one alert to the Pushover plugin. Returns ("sent" | "failed" | "absent", why).
+
+        Never raises. A Pushover plugin that is enabled but not running counts as a failure
+        to try again; one that is not there or is switched off does not.
+        """
         try:
             pushover = indigo.server.getPlugin("io.thechad.indigoplugin.pushover")
-            if pushover and pushover.isEnabled():
-                pushover.executeAction("send", props={
-                    "msgTitle":    title,
-                    "msgBody":     message,
-                    "msgPriority": priority,
-                    "msgSound":    "vibrate",   # vibrate only, no sound
-                })
-                self.logger.info(f"[Gateway] Pushover sent: {title}")
-            else:
-                self.logger.warning(f"[Gateway] Pushover not enabled — alert not sent: {title}")
+            if not pushover or not pushover.isEnabled():
+                return "absent", ""
+            if not pushover.isRunning():
+                return "failed", "the Pushover plugin is enabled but not running"
+            pushover.executeAction("send", props={
+                "msgTitle":    waiting["title"],
+                "msgBody":     waiting["body"],
+                "msgPriority": waiting["priority"],
+                "msgSound":    "vibrate",   # vibrate only, no sound
+            })
+            return "sent", ""
         except Exception as exc:
-            self.logger.error(f"[Gateway] Pushover send failed: {exc}")
+            return "failed", str(exc)
+
+    def _log_alert_line(self, tag, line):
+        if not line:
+            return
+        level, text = line
+        log = self.logger.warning if level == "warning" else self.logger.info
+        log(f"[{tag}] {text}")
+
+    _ALERT_TAGS = {"gateway": "Gateway", "watchdog": "Watchdog"}
+
+    def _retry_alerts(self, now):
+        """Main loop, every pass: drop alerts that have waited too long, retry those due.
+
+        The outbox decides both, so this cannot loop for ever: an alert is dropped 30 minutes
+        after it was raised, and is tried at most once a minute until then.
+        """
+        try:
+            for sender_line in self.alert_outbox.give_up(now):
+                self.logger.warning(f"[Alerts] {sender_line[1]}")
+            for sender in self.alert_outbox.due(now):
+                self._attempt_pushover(sender, self._ALERT_TAGS.get(sender, "Alerts"))
+        except Exception as exc:
+            self.logger.debug(f"[Alerts] Retry pass failed: {exc}")
 
     def _watchdog_tick(self, offline_since):
         """Gateway power-cycle watchdog. Main thread only — called every main-loop pass.
@@ -3403,20 +3476,7 @@ class Plugin(indigo.PluginBase):
 
     def _send_watchdog_pushover(self, title, message, priority="0"):
         """Pushover for watchdog events. Main thread only."""
-        try:
-            pushover = indigo.server.getPlugin("io.thechad.indigoplugin.pushover")
-            if pushover and pushover.isEnabled():
-                pushover.executeAction("send", props={
-                    "msgTitle":    title,
-                    "msgBody":     message,
-                    "msgPriority": priority,
-                    "msgSound":    "vibrate",
-                })
-                self.logger.info(f"[Watchdog] Pushover sent: {title}")
-            else:
-                self.logger.warning(f"[Watchdog] Pushover not enabled — alert not sent: {title}")
-        except Exception as exc:
-            self.logger.error(f"[Watchdog] Pushover send failed: {exc}")
+        self._send_pushover("watchdog", "Watchdog", title, message, priority)
 
     def _apply_zone_name_update(self, zone_idx, name):
         """
