@@ -7,6 +7,10 @@ nav_order: 12
 
 The newest version is at the top.
 
+## 1.19.1 — 24 November 2026
+
+A radiator setting sent in the first instant after the plugin starts is no longer lost. EvoHome Heating Controller sends its first settings within a tenth of a second of this plugin saying it is ready, and until now those were refused with "MQTT not connected" because the connection to the broker was still being made. The plugin now waits for that first connection, for at most three seconds from when it was started. A broker that really is down still refuses the setting, with the same message.
+
 ## 1.19.0 — 24 November 2026
 
 - **A gateway that stops hearing the controller is noticed.** On 23 November my gateway's receiver lost sensitivity. It went on hearing every radiator valve and the boiler relay, but lost the Evohome controller for anything from 20 minutes to two hours at a time, so no temperature I set was taken up, and nothing warned me, because the plugin only checked that *some* radio message was arriving. The plugin now times the last message from your own controller. After 15 minutes without one, while the gateway is online and other devices are still heard, it treats the gateway as offline.

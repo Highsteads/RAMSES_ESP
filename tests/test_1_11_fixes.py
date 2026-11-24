@@ -435,3 +435,57 @@ def test_the_watchdog_names_the_outage_it_is_acting_on(plug):
     plug._deaf_reason = "controller"
     assert plug._outage_words() == ("Evohome controller not heard",
                                     "Evohome controller still not heard")
+
+
+# --- 1.19.1: a setting sent while the first broker connection is being made ----------------
+
+def _grace(plug, connected=False, started=1000.0):
+    plug.mqtt_connected = connected
+    plug._first_connect_started = started
+    return plug
+
+
+def test_setting_waits_for_the_first_connection(plug):
+    _grace(plug)
+    ticks = {"t": 1000.02, "pauses": 0}
+
+    def pause(_secs):
+        ticks["pauses"] += 1
+        ticks["t"] += 0.05
+        if ticks["pauses"] == 2:
+            plug.mqtt_connected = True          # paho reports the connection
+
+    assert plug._wait_for_first_connect(now=lambda: ticks["t"], pause=pause) is True
+    assert ticks["pauses"] == 2
+
+
+def test_wait_gives_up_at_the_grace_and_does_not_wait_again(plug):
+    _grace(plug)
+    ticks = {"t": 1000.0, "pauses": 0}
+
+    def pause(secs):
+        ticks["pauses"] += 1
+        ticks["t"] += secs
+
+    assert plug._wait_for_first_connect(now=lambda: ticks["t"], pause=pause) is False
+    assert 1002.9 <= ticks["t"] <= 1003.06
+    before = ticks["pauses"]
+    assert plug._wait_for_first_connect(now=lambda: ticks["t"], pause=pause) is False
+    assert ticks["pauses"] == before            # a later caller is refused at once
+
+
+def test_no_wait_before_any_connection_was_started_or_when_connected(plug):
+    def boom(_secs):
+        raise AssertionError("must not wait")
+    assert _grace(plug, started=None)._wait_for_first_connect(pause=boom) is False
+    assert _grace(plug, connected=True)._wait_for_first_connect(pause=boom) is True
+
+
+def test_a_setting_with_no_broker_is_still_refused(plug):
+    _deaf_ready(plug)
+    plug._last_rx_time = time.time()
+    plug.gateway_deaf = False
+    plug.mqtt_connected = False
+    plug._first_connect_started = time.time() - 60
+    ok, why = plug._validate_and_publish_setpoint(FakeZone(), 20.0, "set")
+    assert ok is False and why == "MQTT is not connected"

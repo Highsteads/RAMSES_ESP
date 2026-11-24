@@ -2,7 +2,7 @@
 
 **See and control your Honeywell Evohome heating from Indigo, locally over radio, with no Honeywell account or cloud.**
 
-**Version:** 1.19.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
+**Version:** 1.19.1 | **Author:** CliveS & Claude | **Needs:** Indigo 2025.2 or later, a RAMSES-ESP gateway and an MQTT broker
 
 **[Read the full guide](https://highsteads.github.io/RAMSES_ESP/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -43,6 +43,8 @@ This plugin lets [Indigo](https://www.indigodomo.com) work with a **Honeywell Ev
 The [full guide](https://highsteads.github.io/RAMSES_ESP/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v1.19.1** — A radiator setting sent in the first instant after the plugin starts is no longer lost. It used to be refused with "MQTT not connected" because the broker connection was still being made; the plugin now waits up to three seconds for that connection.
 
 **v1.19.0** — A gateway that goes on hearing the radiator valves but stops hearing the Evohome controller is now noticed. After 15 minutes without a message from the controller, **Gateway Status** shows **Offline**, new temperatures are refused with the reason, an **Evohome controller not heard** alert goes to your phone, and the power-cycle watchdog restarts the gateway if you have it switched on.
 

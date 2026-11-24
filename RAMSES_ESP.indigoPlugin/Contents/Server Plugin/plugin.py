@@ -7,7 +7,13 @@
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5, Claude Opus 5.5, Claude Fable 5.2
 # Date:        24-11-2026 13:09
-# Version:     1.19.0
+# Version:     1.19.1
+#
+# v1.19.1 (24-11-2026): a setting sent in the first instant after start-up is no longer lost.
+#   EvoHomeControl sends its first settings within a tenth of a second of "ready", before paho
+#   has reported the broker connection, and they were refused with "MQTT not connected" (seen
+#   23-Nov 09:11 and 10:30). _wait_for_first_connect() now waits for that connection, for at most
+#   MQTT_START_GRACE_SECONDS (3) counted from when the first connection was started.
 #
 # v1.19.0 (24-11-2026): A GATEWAY THAT STOPS HEARING THE CONTROLLER IS NOTICED. From about 17:00
 #   on 23-Nov the gateway's receiver lost sensitivity: it went on passing every valve and the
@@ -613,6 +619,9 @@ GATEWAY_DEAF_SECONDS   = 900
 # receiver lost sensitivity on 23-Nov-2026 and only a power cycle cleared it) or the
 # controller itself is off the air. Either way nothing we send will be confirmed.
 CONTROLLER_SILENT_SECONDS = 900
+# A setting that arrives while the first broker connection is still being made waits this
+# long for it, counted from when that connection was started, instead of being refused (1.19.1).
+MQTT_START_GRACE_SECONDS  = 3.0
 DEAF_RADIO             = "radio"        # the gateway passes on nothing at all
 DEAF_CONTROLLER        = "controller"   # it passes on other devices, never our controller
 
@@ -692,6 +701,7 @@ class Plugin(indigo.PluginBase):
         # MQTT client state
         self.mqtt_client        = None
         self.mqtt_connected     = False
+        self._first_connect_started = None   # when the first broker connection was started
         self.mqtt_lock          = threading.Lock()   # protects mqtt_client access
 
         # Gateway identity
@@ -1430,7 +1440,7 @@ class Plugin(indigo.PluginBase):
                 self.logger.debug(f"Cannot {action_str} setpoint for '{dev.name}' - {why}")
             return False, why
         self._setpoint_refused.clear()
-        if not self.mqtt_connected:
+        if not self._wait_for_first_connect():
             self.logger.error(
                 f"Cannot {action_str} setpoint for '{dev.name}' - MQTT not connected"
             )
@@ -1822,6 +1832,8 @@ class Plugin(indigo.PluginBase):
                 )
 
             self._last_connect_time = time.time()
+            if getattr(self, "_first_connect_started", None) is None:
+                self._first_connect_started = self._last_connect_time
             self.logger.debug(f"Connecting to MQTT broker {self.broker_host}:{self.broker_port}")
             client.connect(
                 host=self.broker_host,
@@ -1836,6 +1848,24 @@ class Plugin(indigo.PluginBase):
         except Exception as exc:
             self.logger.error(f"MQTT connection failed: {exc}")
             self.mqtt_connected = False
+
+    def _wait_for_first_connect(self, now=None, pause=time.sleep):
+        """True when the broker is connected. In the first MQTT_START_GRACE_SECONDS after
+        the first connection was started, wait for it: EvoHomeControl sends its first
+        settings within a tenth of a second of this plugin saying it is ready, and until
+        1.19.1 those were refused and lost because paho had not yet reported the
+        connection. The wait is measured from the start of the connection, not from each
+        call, so a broker that is down costs every caller together at most the grace."""
+        if self.mqtt_connected:
+            return True
+        started = getattr(self, "_first_connect_started", None)
+        if started is None:
+            return False
+        deadline = started + MQTT_START_GRACE_SECONDS
+        clock = time.time if now is None else now
+        while not self.mqtt_connected and clock() < deadline:
+            pause(0.05)
+        return bool(self.mqtt_connected)
 
     def _mqtt_disconnect(self):
         """Gracefully stop the paho client."""
