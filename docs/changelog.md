@@ -7,6 +7,13 @@ nav_order: 12
 
 The newest version is at the top.
 
+## 1.19.0 — 24 November 2026
+
+- **A gateway that stops hearing the controller is noticed.** On 23 November my gateway's receiver lost sensitivity. It went on hearing every radiator valve and the boiler relay, but lost the Evohome controller for anything from 20 minutes to two hours at a time, so no temperature I set was taken up, and nothing warned me, because the plugin only checked that *some* radio message was arriving. The plugin now times the last message from your own controller. After 15 minutes without one, while the gateway is online and other devices are still heard, it treats the gateway as offline.
+- **What you see.** **Gateway Status** shows **Offline** on every zone. A new temperature is refused at once, and the Event Log says the gateway is not hearing the Evohome controller, instead of the setting being sent five times and given up on. After five more minutes an **Evohome controller not heard** alert goes to your phone, and an **Evohome controller heard again** alert follows when it returns.
+- **The watchdog acts on it.** With the power-cycle watchdog switched on, the gateway is restarted through its plug, with the same timings and daily limit as for any other outage. Switching mine off and on cleared the fault at once. If the controller itself is off, restarting the gateway will not help, and the watchdog stops at its daily limit and says so.
+- **Only the controller ends it.** A message from a valve, from a neighbour's controller, or the gateway rejoining the broker does not count. The outage ends when your own controller is heard.
+
 ## 1.18.2 — 17 November 2026
 
 - **A phone alert that cannot be sent is tried again.** On 17 November the internet was down for some minutes while a router was swapped, the gateway dropped out, and the alert saying so was tried once and lost. An alert that does not go is now kept and tried again once a minute for up to half an hour. After that the plugin gives up on it and says so in the Event Log. Only the newest alert of each kind is kept, so a stale one is never sent after a newer one.

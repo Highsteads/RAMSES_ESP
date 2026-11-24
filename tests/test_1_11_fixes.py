@@ -307,3 +307,131 @@ def test_startup_says_one_line_at_info():
              if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
              and n.func.attr == "info"]
     assert len(infos) == 1
+
+
+# ==========================================================================
+# 1.19.0 - a gateway that hears the valves but not our controller
+# ==========================================================================
+
+def _ctl_silent_ready(plug):
+    """Radio messages are arriving, but the last one from our controller is old."""
+    now = _deaf_ready(plug)
+    plug.controller_id     = OURS
+    plug._last_rx_time     = now - 5          # a valve, five seconds ago
+    plug._last_ctl_rx_time = now - 1000
+    return now
+
+
+def test_a_silent_controller_counts_as_deaf_though_valves_are_heard(plug):
+    now = _ctl_silent_ready(plug)
+    plug._check_gateway_deaf(now)
+    assert plug.gateway_deaf is True
+    assert plug._deaf_reason == "controller"
+    assert plug.gateway_offline_since == now, "arms the alert and the watchdog"
+    plug._check_gateway_deaf(now + 5)
+    assert plug.logger.warning.call_count == 1, "said once, not every pass"
+
+
+def test_a_controller_heard_lately_is_not_silent(plug):
+    now = _ctl_silent_ready(plug)
+    plug._last_ctl_rx_time = now - 600
+    plug._check_gateway_deaf(now)
+    assert plug.gateway_deaf is False
+
+
+def test_no_controller_learned_means_nothing_to_miss(plug):
+    now = _ctl_silent_ready(plug)
+    plug.controller_id = ""
+    plug._check_gateway_deaf(now)
+    assert plug.gateway_deaf is False
+
+
+def test_a_fresh_subscription_gives_the_controller_the_whole_window(plug):
+    now = _ctl_silent_ready(plug)
+    plug._last_ctl_rx_time = 0.0
+    plug._rx_listen_since  = now - 60
+    plug._check_gateway_deaf(now)
+    assert plug.gateway_deaf is False
+
+
+def test_a_valve_does_not_end_a_controller_silence_but_the_controller_does(plug):
+    now = _ctl_silent_ready(plug)
+    plug._check_gateway_deaf(now)
+    plug.gateway_alert_sent = True
+    plug._handle_rx_message('{"msg": "070 I --- 04:254001 --:------ %s 3150 002 0400"}' % OURS)
+    assert plug.gateway_deaf is True
+    assert plug.pending_gateway_alert is None
+    plug._handle_rx_message('{"msg": "062 I --- %s --:------ %s 1F09 003 FF0730"}' % (OURS, OURS))
+    assert plug.gateway_deaf is False
+    assert plug._deaf_reason == ""
+    assert plug.gateway_offline_since is None
+    assert plug.pending_gateway_alert == "restored"
+
+
+def test_another_controller_does_not_end_the_silence(plug):
+    now = _ctl_silent_ready(plug)
+    plug._check_gateway_deaf(now)
+    plug._handle_rx_message('{"msg": "062 I --- 01:999999 --:------ 01:999999 1F09 003 FF0730"}')
+    assert plug.gateway_deaf is True
+
+
+def test_the_gateway_rejoining_does_not_end_a_controller_silence(plug):
+    now = _ctl_silent_ready(plug)
+    plug._check_gateway_deaf(now)
+    plug.gateway_alert_sent = True
+    plug._handle_info_message(f"RAMSES/GATEWAY/{GATEWAY}", "online",
+                              ["RAMSES", "GATEWAY", GATEWAY])
+    assert plug.gateway_deaf is True, "only hearing the controller ends it"
+    assert plug.gateway_offline_since == now, "so the watchdog keeps its count"
+    assert plug.pending_gateway_alert is None
+    assert plug._rx_listen_since >= now
+
+
+def test_a_radio_deaf_spell_still_ends_on_any_message(plug):
+    now = _deaf_ready(plug)
+    plug.controller_id = OURS
+    plug._check_gateway_deaf(now)
+    assert plug._deaf_reason == "radio"
+    plug._handle_rx_message('{"msg": "070 I --- 04:254001 --:------ %s 3150 002 0400"}' % OURS)
+    assert plug.gateway_deaf is False
+
+
+def test_a_setting_is_refused_while_the_controller_is_unheard(sending):
+    plug, zone = sending
+    plug.gateway_deaf = True
+    plug._deaf_reason = "controller"
+    ok, why = plug._validate_and_publish_setpoint(zone, 20.5, "set")
+    assert ok is False
+    assert why == "the gateway is not hearing the Evohome controller"
+    plug.mqtt_client.publish.assert_not_called()
+
+
+def test_the_alert_names_the_controller_and_reads_as_prose(plug, monkeypatch):
+    sent = []
+    monkeypatch.setattr(plug, "_send_pushover",
+                        lambda sender, tag, title, message, priority="0", kind="":
+                        sent.append((title, message, priority, kind)))
+    plug.gateway_deaf = True
+    plug._deaf_reason = "controller"
+    plug.wd_enabled, plug.wd_plug_id, plug.wd_offline_minutes = True, 123, 15
+    plug._send_gateway_alert("offline")
+    plug.gateway_deaf, plug._deaf_reason = False, ""
+    plug._send_gateway_alert("restored")
+    (t1, m1, p1, k1), (t2, m2, p2, k2) = sent
+    assert t1 == "Evohome controller not heard" and p1 == "1" and k1 == "offline"
+    assert "restarted in about 15 minutes" in m1
+    assert t2 == "Evohome controller heard again" and k2 == "restored"
+    for text in (m1, m2):
+        assert text.endswith(".") and text.isascii()
+        assert "|" not in text and "=" not in text
+    plug.gateway_deaf = False
+    plug._send_gateway_alert("offline")
+    assert sent[-1][0] == "RAMSES Gateway Offline", "a plain outage keeps its own words"
+
+
+def test_the_watchdog_names_the_outage_it_is_acting_on(plug):
+    assert plug._outage_words()[0] == "Gateway offline"
+    plug.gateway_deaf = True
+    plug._deaf_reason = "controller"
+    assert plug._outage_words() == ("Evohome controller not heard",
+                                    "Evohome controller still not heard")

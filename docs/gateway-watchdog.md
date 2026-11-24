@@ -7,6 +7,8 @@ nav_order: 7
 
 While the gateway is connected, it tells the broker it is online. If it drops off the network, the broker passes on that it has gone offline. A gateway can also stay connected and still pass on nothing from the radio: when no message has arrived for 15 minutes, the plugin treats it as offline too. Every zone device shows this in its **Gateway Status**, which you can use in your own triggers, and the plugin can act on it in two ways.
 
+A third case is a gateway that hears the radiator valves but not the Evohome controller. The controller broadcasts every three minutes; when 15 minutes pass without a message from it, while other devices are still heard, the plugin treats the gateway as offline in the same way. The alert for this case is called **Evohome controller not heard**, with **Evohome controller heard again** when it returns, and the watchdog below acts on it too. Only a message from your own controller ends it.
+
 ## Alerts on your phone
 
 If you have the Pushover plugin installed and enabled, the plugin sends a **RAMSES Gateway Offline** alert once the gateway has been offline for five minutes, and a **RAMSES Gateway Restored** alert when it comes back. A gateway that drops out and returns within five minutes sends nothing. There is no setting for this — it is always on when the Pushover plugin is there, and the log says so when it is not.

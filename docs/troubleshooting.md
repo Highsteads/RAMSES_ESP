@@ -83,6 +83,12 @@ The broker has reported that the gateway dropped off the network. **Online (brok
 
 The gateway is still connected to the broker and says it is online, but nothing from the radio has come through it for 15 minutes. The plugin treats that as offline: **Gateway Status** shows **Offline**, the alert follows after five more minutes, and the [power-cycle watchdog](gateway-watchdog.md) can switch it off and on. It says so again when messages arrive.
 
+## The log says the gateway has heard nothing from the Evohome controller
+
+The gateway is online and still hears other heating devices, such as the radiator valves, but no message from your controller has come through it for 15 minutes. A controller normally broadcasts every three minutes. While this lasts, nothing Indigo sends is taken up, so the plugin treats the gateway as offline: **Gateway Status** shows **Offline**, a new temperature is refused with the reason, an **Evohome controller not heard** alert follows after five more minutes, and the [power-cycle watchdog](gateway-watchdog.md) can switch the gateway off and on.
+
+There are two causes. The gateway's receiver can lose sensitivity, so that it hears nearby devices and misses the controller; switching the gateway off and on cleared this on mine. Or the controller itself is off the air: look at its screen, its power and its batteries. The log says so when the controller is heard again.
+
 ## The log says Evohome has not confirmed a setpoint
 
 The plugin sent a new temperature five times and the controller has not reported it back in five minutes. From 1.17.0 the controller has to report back the whole setting, the temperature, whether it is timed or permanent, and when it ends, before the plugin counts it as taken, so a timed setting renewed at the same temperature is resent if the new end time does not arrive. The controller may be out of range of the gateway, or the radio may be busy. The zone keeps showing the temperature the controller last reported, which is the one it is really using.

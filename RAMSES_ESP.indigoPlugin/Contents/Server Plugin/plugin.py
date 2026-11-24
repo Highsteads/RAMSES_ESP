@@ -6,8 +6,19 @@
 #              the gateway ID and Evohome zone thermostats from the RAMSES-II radio
 #              message stream, and creates/updates Indigo custom devices for each zone.
 # Author:      CliveS & Claude Opus 5, Claude Opus 5.5, Claude Fable 5.2
-# Date:        17-11-2026 22:20
-# Version:     1.18.2
+# Date:        24-11-2026 13:09
+# Version:     1.19.0
+#
+# v1.19.0 (24-11-2026): A GATEWAY THAT STOPS HEARING THE CONTROLLER IS NOTICED. From about 17:00
+#   on 23-Nov the gateway's receiver lost sensitivity: it went on passing every valve and the
+#   boiler relay but lost the controller for 20 to 130 minutes at a time, so no setting was
+#   confirmed, and the deaf check (any radio traffic) never tripped. A power cycle cleared it.
+#   The plugin now times the last message from OUR controller. After CONTROLLER_SILENT_SECONDS
+#   (15 min) with the gateway online and other traffic arriving, it is treated as deaf with
+#   _deaf_reason = DEAF_CONTROLLER: Gateway Status offline, settings refused with the reason,
+#   the alert ("Evohome controller not heard") and the power-cycle watchdog act as for any
+#   outage. Only hearing the controller ends it; a valve, another controller or the gateway
+#   rejoining the broker does not.
 #
 # v1.18.2 (17-11-2026): A PUSHOVER ALERT THAT DOES NOT GO IS TRIED AGAIN. On 17-Nov the internet
 #   was down while the router was swapped; the "gateway offline" alert was tried once, failed
@@ -597,6 +608,13 @@ RELAY_TS_FORMAT          = "%Y-%m-%d %H:%M:%S"
 # every zone's temperature and setpoint about every 3 minutes, and the valves send in
 # between, so 15 minutes of nothing is five missed broadcasts. Treated as offline.
 GATEWAY_DEAF_SECONDS   = 900
+# The controller broadcasts every three minutes or so. Five missed in a row, while the
+# gateway still passes on other devices, means the gateway has stopped hearing it (its
+# receiver lost sensitivity on 23-Nov-2026 and only a power cycle cleared it) or the
+# controller itself is off the air. Either way nothing we send will be confirmed.
+CONTROLLER_SILENT_SECONDS = 900
+DEAF_RADIO             = "radio"        # the gateway passes on nothing at all
+DEAF_CONTROLLER        = "controller"   # it passes on other devices, never our controller
 
 # A setpoint is shown only once the controller reports it back. Until then it is resent
 # every SETPOINT_RESEND_SECONDS, SETPOINT_MAX_SENDS times in all; a command still not
@@ -707,6 +725,11 @@ class Plugin(indigo.PluginBase):
         self._last_rx_time         = 0.0
         self._rx_listen_since      = time.time()
         self.gateway_deaf          = False  # guarded by pending_lock
+        # Why it is deaf (DEAF_RADIO / DEAF_CONTROLLER, "" when it is not), when our own
+        # controller was last heard, and which kind of outage the last alert described.
+        self._deaf_reason          = ""     # guarded by pending_lock
+        self._last_ctl_rx_time     = 0.0
+        self._alerted_reason       = ""     # main thread only
 
         # Setpoints sent but not yet reported back by the controller.
         # {zone_idx: {"sp": float, "first": ts, "last": ts, "sends": int}}; pending_lock.
@@ -1388,10 +1411,15 @@ class Plugin(indigo.PluginBase):
         with self.pending_lock:
             gateway_online = self.gateway_online
             gateway_deaf   = self.gateway_deaf
+            deaf_reason    = self._deaf_reason
         if gateway_online is False or gateway_deaf:
             zone_key = dev.id
-            why = ("the gateway is offline" if gateway_online is False
-                   else "the gateway is passing on no radio messages")
+            if gateway_online is False:
+                why = "the gateway is offline"
+            elif deaf_reason == DEAF_CONTROLLER:
+                why = "the gateway is not hearing the Evohome controller"
+            else:
+                why = "the gateway is passing on no radio messages"
             if zone_key not in self._setpoint_refused:
                 self._setpoint_refused.add(zone_key)
                 self.logger.error(
@@ -1942,11 +1970,17 @@ class Plugin(indigo.PluginBase):
                         prev_online = self.gateway_online
                         was_deaf    = self.gateway_deaf
                         self.gateway_online = True
+                        self._rx_listen_since = time.time()
+                        if self.gateway_deaf and self._deaf_reason == DEAF_CONTROLLER:
+                            # Rejoining the broker proves nothing about the controller:
+                            # only hearing it ends this outage (see _note_rx). After a
+                            # watchdog power cycle that takes a minute or two.
+                            return
                         self.gateway_offline_since = None   # cancel any pending offline timer
                         # A gateway that has just (re)joined gets a fresh listening window
                         # before it can be called deaf again - after a power cycle, say.
                         self.gateway_deaf = False
-                        self._rx_listen_since = time.time()
+                        self._deaf_reason = ""
                         # Send "restored" only if the offline alert was actually sent
                         if (prev_online is False or was_deaf) and self.gateway_alert_sent:
                             self.pending_gateway_alert = "restored"
@@ -2040,20 +2074,42 @@ class Plugin(indigo.PluginBase):
         except Exception as exc:
             self.logger.warning(f"Could not save controller ID to prefs: {exc}")
 
-    def _note_rx(self, now):
-        """A radio message arrived. MQTT thread. Ends a deaf spell if there was one."""
+    def _note_rx(self, now, from_controller=False):
+        """A radio message arrived. MQTT thread. Ends a deaf spell if there was one.
+
+        A spell declared because our controller went unheard ends only when the
+        controller itself is heard: the valves were arriving all along."""
         self._last_rx_time = now
+        if from_controller:
+            self._last_ctl_rx_time = now
         if not self.gateway_deaf:
             return
         with self.pending_lock:
             if not self.gateway_deaf:
                 return
+            reason = self._deaf_reason
+            if reason == DEAF_CONTROLLER and not from_controller:
+                return
             self.gateway_deaf = False
+            self._deaf_reason = ""
             self.gateway_offline_since = None
             if self.gateway_alert_sent:
                 self.pending_gateway_alert = "restored"
                 self.gateway_alert_sent    = False
-        self.logger.info("Radio messages are arriving from the gateway again")
+        if reason == DEAF_CONTROLLER:
+            self.logger.info("The Evohome controller is being heard again, so radiator "
+                             "settings can reach it")
+        else:
+            self.logger.info("Radio messages are arriving from the gateway again")
+
+    def _is_from_our_controller(self, msg_str):
+        """True when this radio message was sent by our own controller. MQTT thread.
+        Any verb counts: this is about whether the gateway can hear it, not what it said."""
+        cid = self.controller_id
+        if not cid:
+            return False
+        fields = msg_str.split()
+        return len(fields) > 3 and fields[3] == cid
 
     @staticmethod
     def _gateway_is_deaf(now, connected, online, subscribed, last_rx, listen_since,
@@ -2077,10 +2133,12 @@ class Plugin(indigo.PluginBase):
         if not self._gateway_is_deaf(now, self.mqtt_connected, online,
                                      self.gateway_subscribed, self._last_rx_time,
                                      self._rx_listen_since):
+            self._check_controller_silent(now, online)
             return
         quiet = now - max(self._last_rx_time, self._rx_listen_since)
         with self.pending_lock:
             self.gateway_deaf = True
+            self._deaf_reason = DEAF_RADIO
             if self.gateway_offline_since is None:
                 self.gateway_offline_since = now
         self.logger.warning(
@@ -2090,6 +2148,30 @@ class Plugin(indigo.PluginBase):
         )
         # Cheap, and rules out our own subscription having been lost.
         self._resubscribe_to_gateway()
+
+    def _check_controller_silent(self, now, online):
+        """Main thread. The gateway is passing on radio messages, but is our controller
+        among them? If it has not been heard for CONTROLLER_SILENT_SECONDS, treat the
+        gateway as deaf: the same alert, refusal of settings and power-cycle watchdog."""
+        if not self.controller_id:
+            return      # not learned yet, so there is nothing to miss
+        if not self._gateway_is_deaf(now, self.mqtt_connected, online,
+                                     self.gateway_subscribed, self._last_ctl_rx_time,
+                                     self._rx_listen_since,
+                                     limit=CONTROLLER_SILENT_SECONDS):
+            return
+        quiet = now - max(self._last_ctl_rx_time, self._rx_listen_since)
+        with self.pending_lock:
+            self.gateway_deaf = True
+            self._deaf_reason = DEAF_CONTROLLER
+            if self.gateway_offline_since is None:
+                self.gateway_offline_since = now
+        self.logger.warning(
+            f"The gateway has heard nothing from the Evohome controller "
+            f"{self.controller_id} for {quiet / 60:.0f} minutes, though other heating "
+            f"devices are still being heard. Radiator settings cannot reach Evohome "
+            f"until it is heard again, so the gateway is being treated as offline."
+        )
 
     def _queue_setpoint(self, zone_idx, setpoint_c, until=None):
         """Accept the latest intent per zone; the worker spaces physical sends.
@@ -2314,7 +2396,7 @@ class Plugin(indigo.PluginBase):
         if not msg_str:
             return
 
-        self._note_rx(time.time())
+        self._note_rx(time.time(), self._is_from_our_controller(msg_str))
 
         self._parse_ramses_message(msg_str, ts)
 
@@ -3063,6 +3145,25 @@ class Plugin(indigo.PluginBase):
     def _send_gateway_alert(self, status):
         """Send Pushover notification for gateway offline/restored. Called from main thread only."""
         if status == "offline":
+            with self.pending_lock:
+                self._alerted_reason = self._deaf_reason if self.gateway_deaf else ""
+        if self._alerted_reason == DEAF_CONTROLLER:
+            if status == "offline":
+                title    = "Evohome controller not heard"
+                message  = ("The heating gateway has stopped hearing the Evohome controller, "
+                            "though it still hears the radiator valves. Changes to radiator "
+                            "temperatures cannot reach the house until it is heard again.")
+                if self.wd_enabled and self.wd_plug_id:
+                    message += (f" The gateway will be restarted in about "
+                                f"{self.wd_offline_minutes} minutes to try to clear it.")
+                priority = "1"
+            else:
+                title    = "Evohome controller heard again"
+                message  = ("The heating gateway is hearing the Evohome controller again, "
+                            "so radiator temperatures can be set as normal.")
+                priority = "0"
+                self._alerted_reason = ""
+        elif status == "offline":
             title    = "RAMSES Gateway Offline"
             message  = (f"RAMSES ESP gateway {self.gateway_id or 'unknown'} has gone offline"
                         f" — Evohome radiator control suspended")
@@ -3166,12 +3267,12 @@ class Plugin(indigo.PluginBase):
             if not self.wd_gave_up_alerted:
                 self.wd_gave_up_alerted = True
                 self.logger.warning(
-                    f"[Watchdog] Gateway still offline but daily cycle cap "
+                    f"[Watchdog] {self._outage_words()[1]} but daily cycle cap "
                     f"({self.wd_max_cycles}) reached — manual attention needed"
                 )
                 self._send_watchdog_pushover(
                     "RAMSES watchdog giving up",
-                    f"Gateway still offline after {self.wd_cycles_today} power "
+                    f"{self._outage_words()[1]} after {self.wd_cycles_today} power "
                     f"cycle(s) today — it needs a human.",
                     priority="1",
                 )
@@ -3208,7 +3309,7 @@ class Plugin(indigo.PluginBase):
 
         self._persist_watchdog_state()
         self.logger.warning(
-            f"[Watchdog] Gateway offline {mins}m — power-cycling its plug "
+            f"[Watchdog] {self._outage_words()[0]} {mins}m — power-cycling the gateway's plug "
             f"(off {self.wd_off_seconds}s, cycle #{self.wd_cycles_today + 1} of "
             f"{self.wd_max_cycles} today)"
         )
@@ -3225,9 +3326,18 @@ class Plugin(indigo.PluginBase):
         self._persist_watchdog_state()
         self._send_watchdog_pushover(
             "RAMSES watchdog power-cycled gateway",
-            f"Gateway offline {mins}m — plug cycled "
+            f"{self._outage_words()[0]} {mins}m — plug cycled "
             f"(#{self.wd_cycles_today} of {self.wd_max_cycles} today).",
         )
+
+    def _outage_words(self):
+        """("Gateway offline", "Gateway still offline"), or the same pair for a controller
+        the gateway cannot hear, so the watchdog's lines name the outage it is acting on."""
+        with self.pending_lock:
+            controller = self.gateway_deaf and self._deaf_reason == DEAF_CONTROLLER
+        if controller:
+            return ("Evohome controller not heard", "Evohome controller still not heard")
+        return ("Gateway offline", "Gateway still offline")
 
     def _note_no_cycle(self, mins, reason):
         """Record an attempt that did not cut power, and say so — once per outage.
@@ -3240,7 +3350,8 @@ class Plugin(indigo.PluginBase):
         """
         self.wd_no_cycle_streak += 1
         if self.wd_no_cycle_streak == 1:
-            self.logger.warning(f"[Watchdog] Gateway offline {mins}m but not cycling — {reason}")
+            self.logger.warning(
+                f"[Watchdog] {self._outage_words()[0]} {mins}m but not cycling — {reason}")
         else:
             self.logger.debug(
                 f"[Watchdog] Still not cycling (attempt {self.wd_no_cycle_streak}) — {reason}"
